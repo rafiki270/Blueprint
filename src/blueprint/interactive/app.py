@@ -25,6 +25,7 @@ class BlueprintApp(App):
         grid-size: 2 2;
         grid-rows: auto 1fr;
         grid-columns: 1fr 3fr;
+        overflow: hidden;
     }
 
     #top-bar {
@@ -32,18 +33,24 @@ class BlueprintApp(App):
     }
 
     #task-list-widget {
-        border: tall;
+        border: tall $primary;
+        padding: 0;
+        overflow-y: auto;
     }
 
     #output-panel {
-        border: tall;
+        border: tall $primary;
+        padding: 0;
+        overflow-y: auto;
     }
 
     #context-panel {
         display: none;
         column-span: 2;
         height: 0;
-        border: tall;
+        border: tall $primary;
+        padding: 0;
+        overflow-y: auto;
     }
     """
 
@@ -130,9 +137,8 @@ class BlueprintApp(App):
         self.refresh(layout=True)
 
     async def on_top_bar_menu_toggled(self, event: TopBar.MenuToggled) -> None:
-        """Handle menu toggle from TopBar."""
-        # For now, just show help
-        await self.command_handler.cmd_help("")
+        """Handle menu toggle from TopBar - open command palette."""
+        self.action_command_palette()
 
     def action_stop_task(self) -> None:
         self.run_worker(self.command_handler.cmd_stop(""))

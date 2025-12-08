@@ -17,7 +17,6 @@ class TopBar(Widget):
     DEFAULT_CSS = """
     TopBar {
         height: auto;
-        dock: top;
         background: $panel;
     }
 
@@ -38,6 +37,7 @@ class TopBar(Widget):
     TopBar #menu-button-left:hover,
     TopBar #context-toggle-button:hover {
         background: $primary-darken-1;
+        text-style: bold;
     }
 
     TopBar #title-status {
@@ -66,9 +66,16 @@ class TopBar(Widget):
     def compose(self) -> ComposeResult:
         """Compose the top bar layout."""
         with Horizontal():
-            yield Static("≡", id="menu-button-left")
+            menu_btn = Static("≡", id="menu-button-left")
+            menu_btn.can_focus = False
+            yield menu_btn
+
             yield Static(f"Blueprint - Feature: {self.feature_name}", id="title-status")
-            yield Static("≡", id="context-toggle-button")
+
+            context_btn = Static("≡", id="context-toggle-button")
+            context_btn.can_focus = False
+            yield context_btn
+
         yield Input(placeholder="Enter command (type /help for commands)", id="command-input")
 
     def on_mount(self) -> None:
@@ -100,31 +107,14 @@ class TopBar(Widget):
         event.input.value = ""
         event.input.styles.height = 1
 
-    async def on_click(self, event) -> None:
-        """Handle clicks on buttons."""
-        if event.button != 1:  # Only left clicks
-            return
-
-        # Check if click was on menu button
-        try:
-            if "menu-button-left" in event.style.node.id:
-                self.post_message(self.MenuToggled())
-                event.stop()
-        except (AttributeError, TypeError):
-            pass
-
-        # Check if click was on context toggle button
-        try:
-            clicked_widget = self.get_widget_at(event.screen_x, event.screen_y)[0]
-            if hasattr(clicked_widget, 'id'):
-                if clicked_widget.id == "menu-button-left":
-                    self.post_message(self.MenuToggled())
-                    event.stop()
-                elif clicked_widget.id == "context-toggle-button":
-                    self.post_message(self.ContextToggled())
-                    event.stop()
-        except (AttributeError, IndexError):
-            pass
+    def on_static_click(self, event) -> None:
+        """Handle clicks on Static buttons."""
+        if event.static.id == "menu-button-left":
+            self.post_message(self.MenuToggled())
+            event.stop()
+        elif event.static.id == "context-toggle-button":
+            self.post_message(self.ContextToggled())
+            event.stop()
 
     async def on_key(self, event) -> None:
         """Handle key presses for command history."""
