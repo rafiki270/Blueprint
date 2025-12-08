@@ -95,3 +95,33 @@ Provide the refactored code."""
             result.append(line)
 
         return "\n".join(result)
+
+    async def get_context_limit(self) -> int | None:
+        """
+        Return the configured context length for the current model, if available.
+
+        Uses `ollama show <model> --json` and looks for a `context_length` field.
+        """
+        try:
+            process = await asyncio.create_subprocess_exec(
+                self.cli_command,
+                "show",
+                self.model,
+                "--json",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await process.communicate()
+            if process.returncode != 0 or not stdout:
+                return None
+
+            import json
+
+            data = json.loads(stdout.decode(errors="replace"))
+            if isinstance(data, dict):
+                value = data.get("context_length") or data.get("context") or data.get("ctx")
+                if isinstance(value, int):
+                    return value
+        except Exception:
+            return None
+        return None

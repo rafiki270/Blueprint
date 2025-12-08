@@ -16,10 +16,6 @@ class OutputPanel(Widget):
     OutputPanel RichLog {
         scrollbar-gutter: stable;
     }
-
-    OutputPanel RichLog:focus {
-        border: tall $accent;
-    }
     """
 
     def __init__(self, *args, **kwargs):
@@ -35,11 +31,6 @@ class OutputPanel(Widget):
             wrap=True,
         )
         yield log
-
-    def on_mount(self) -> None:
-        """Make the log focusable for better interaction."""
-        log = self.query_one("#output-log", RichLog)
-        log.can_focus = True
 
     def write_line(self, text: str, style: str | None = None) -> None:
         log = self.query_one("#output-log", RichLog)

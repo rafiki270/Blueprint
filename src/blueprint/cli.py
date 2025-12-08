@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import click
 
 from . import __version__
@@ -14,20 +16,18 @@ from . import __version__
 def main(ctx: click.Context, feature: str) -> None:
     """Blueprint - Multi-LLM Development Orchestrator."""
     if ctx.invoked_subcommand is None:
-        # Default to interactive mode
+        # Default to console chat mode
         try:
-            from .interactive import BlueprintApp
-            app = BlueprintApp(feature)
-            app.run()
+            from .console_chat import run_console_chat
+
+            asyncio.run(run_console_chat(feature))
         except Exception as exc:  # pragma: no cover - defensive fallback
-            click.echo(f"Unable to start interactive mode: {exc}")
+            click.echo(f"Unable to start console mode: {exc}")
             ctx.exit(1)
 
 
-@main.command()
-@click.argument("feature", required=False, default="default")
-def interactive(feature: str) -> None:
-    """Start interactive mode (Textual TUI)."""
+def _start_tui(feature: str) -> None:
+    """Helper to launch the Textual TUI."""
     try:
         from .interactive import BlueprintApp
     except Exception as exc:  # pragma: no cover - defensive fallback
@@ -36,6 +36,20 @@ def interactive(feature: str) -> None:
 
     app = BlueprintApp(feature)
     app.run()
+
+
+@main.command()
+@click.argument("feature", required=False, default="default")
+def tui(feature: str) -> None:
+    """Start Textual TUI."""
+    _start_tui(feature)
+
+
+@main.command()
+@click.argument("feature", required=False, default="default")
+def interactive(feature: str) -> None:
+    """Alias for TUI mode (legacy)."""
+    _start_tui(feature)
 
 
 @main.command()

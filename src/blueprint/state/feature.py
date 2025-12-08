@@ -91,6 +91,30 @@ class Feature:
             return None
         return path.read_text(encoding="utf-8")
 
+    def task_conversation_path(self, task_id: str) -> Path:
+        """Conversation history path for a specific task."""
+        return self.task_dir(task_id) / "conversation.log"
+
+    def append_task_conversation(self, task_id: str, role: str, message: str) -> None:
+        """Append a message to the task's conversation history."""
+        dir_path = self.task_dir(task_id)
+        Persistence.ensure_dir(dir_path)
+        conv_path = self.task_conversation_path(task_id)
+
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        entry = f"[{timestamp}] {role}: {message}\n\n"
+
+        with conv_path.open("a", encoding="utf-8") as f:
+            f.write(entry)
+
+    def load_task_conversation(self, task_id: str) -> Optional[str]:
+        """Load the full conversation history for a task."""
+        conv_path = self.task_conversation_path(task_id)
+        if not conv_path.exists():
+            return None
+        return conv_path.read_text(encoding="utf-8")
+
     @staticmethod
     def list_features() -> List[str]:
         """List all available features."""

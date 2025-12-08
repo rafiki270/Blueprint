@@ -30,7 +30,7 @@ blueprint --version
 ```
 
 ## Usage (planned)
-- Interactive mode: `blueprint` launches the TUI for creating features, reviewing specs, and running tasks.
+- Interactive mode: `blueprint` launches a plain console chat; run `blueprint tui` for the full-screen Textual UI.
 - Static mode: `blueprint run <feature>` executes tasks headlessly for CI/CD or automation.
 
 ## Project layout

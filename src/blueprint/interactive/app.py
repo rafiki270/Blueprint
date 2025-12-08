@@ -12,7 +12,6 @@ from textual.widgets import Footer, Input
 
 from .commands import CommandHandler
 from .widgets import (
-    ClarificationModal,
     ContextPanel,
     ModelSelectorModal,
     NewTaskModal,
@@ -80,7 +79,7 @@ class BlueprintApp(App):
         Binding("ctrl+u", "show_usage", "Usage"),
         Binding("ctrl+s", "stop_task", "Stop Task"),
         Binding("ctrl+c", "exit_or_confirm", "Quit"),
-        Binding("/", "focus_command", "/help", show=True, key_display="/help"),
+        Binding("/", "focus_command", "Help", show=True, key_display="/help"),
     ]
 
     def __init__(self, feature_name: str, *args, **kwargs):
@@ -100,6 +99,14 @@ class BlueprintApp(App):
             self,
         )
         self.context_visible = False
+        self.default_input_placeholder = "Enter command (type /help for commands)"
+
+        # Clarification mode state
+        self.waiting_for_clarification = False
+        self.clarification_questions = []
+        self.clarification_answers = []
+        self.clarification_task = None
+        self.clarification_brief = ""
 
     def compose(self) -> ComposeResult:
         yield TopBar(feature_name=self.feature.name, id="top-bar")
@@ -111,7 +118,7 @@ class BlueprintApp(App):
         yield self.task_list
         yield self.output_panel
         yield self.context_panel
-        yield Footer()
+        yield Footer(show_command_palette=False)
 
     async def on_mount(self) -> None:
         tasks = self.task_manager.list_all()
@@ -128,12 +135,16 @@ class BlueprintApp(App):
 
     async def on_ready(self) -> None:
         """Ensure command input is focused once the UI is ready."""
-        if hasattr(self, "action_focus_command"):
-            self.action_focus_command()
+        if hasattr(self, "_focus_command_input"):
+            self._focus_command_input("/help", placeholder=self.default_input_placeholder)
 
     async def on_top_bar_command_submitted(self, event: TopBar.CommandSubmitted) -> None:
         """Handle command submission from TopBar."""
-        await self.command_handler.handle(event.command)
+        # Check if we're in clarification mode
+        if self.waiting_for_clarification:
+            await self._handle_clarification_answer(event.command)
+        else:
+            await self.command_handler.handle(event.command)
 
     async def on_top_bar_context_toggled(self, event: TopBar.ContextToggled) -> None:
         """Handle context pane toggle from TopBar."""
@@ -171,6 +182,37 @@ class BlueprintApp(App):
     def on_task_list_widget_new_task_requested(self, event: TaskListWidget.NewTaskRequested) -> None:
         """Handle new task button press from TaskListWidget."""
         self.run_worker(self._show_new_task_modal())
+
+    def on_task_list_widget_task_selected(self, event: TaskListWidget.TaskSelected) -> None:
+        """Handle task selection from TaskListWidget."""
+        task = event.task
+        self.output_panel.clear()
+
+        # Show task header
+        self.output_panel.write_line(f"[bold cyan]Task: {task.title}[/bold cyan]")
+        self.output_panel.write_line(f"[dim]ID: {task.id} | Status: {task.status.value} | Type: {task.type.value}[/dim]")
+        self.output_panel.write_line("")
+
+        # Load and display conversation history
+        conversation = self.feature.load_task_conversation(task.id)
+
+        if conversation:
+            self.output_panel.write_line("[bold]Conversation History:[/bold]")
+            self.output_panel.write_line("")
+            # Display conversation with proper formatting
+            for line in conversation.strip().split("\n"):
+                self.output_panel.write_line(line)
+        else:
+            self.output_panel.write_line("[dim]No conversation history yet for this task.[/dim]")
+            self.output_panel.write_line("[dim]Start a task with /start to begin logging conversation.[/dim]")
+
+        # Also update context panel with task details
+        self.context_panel.set_task(task)
+
+        # Load task spec if available
+        task_spec = self.feature.load_task_spec(task.id)
+        if task_spec:
+            self.context_panel.set_spec(task_spec)
 
     async def _show_new_task_modal(self) -> None:
         """Show the new task modal and handle result."""
@@ -282,24 +324,28 @@ Repository and task context:
 
             questions = self._extract_questions(spec)
             if questions:
-                self.output_panel.write_line("[bold yellow]Clarifying questions from Claude:[/bold yellow]")
-                for q in questions:
-                    self.output_panel.write_line(f" - {q}")
-                answers, extra_files = await self._prompt_for_clarifications(questions)
-                if answers or extra_files:
-                    self.output_panel.write_line("[dim]Sending clarifications back to Claude...[/dim]")
-                    file_context = self._gather_additional_files(extra_files)
-                    clarified_brief = enriched_brief
-                    if answers:
-                        clarified_brief += "\n\nClarification answers:\n" + answers
-                    if file_context:
-                        clarified_brief += "\n\nAdditional context files:\n" + file_context
-                    refined_spec = await claude.generate_spec(clarified_brief)
-                    self.feature.save_task_spec(task.id, refined_spec)
-                    self.context_panel.set_spec(refined_spec)
-                    self.output_panel.write_success(
-                        f"Refined task specification saved to {self.feature.task_spec_path(task.id)}"
-                    )
+                # Enter clarification mode instead of showing modal
+                self.waiting_for_clarification = True
+                self.clarification_questions = questions
+                self.clarification_answers = []
+                self.clarification_task = task
+                self.clarification_brief = enriched_brief
+
+                # Move focus to the command bar for answers
+                self._focus_command_input(
+                    "",
+                    placeholder="Answer here (or type 'skip' to continue; press / to refocus)",
+                )
+
+                self.output_panel.write_line("")
+                self.output_panel.write_line("[bold yellow]Claude needs clarifications:[/bold yellow]")
+                for i, q in enumerate(questions, 1):
+                    self.output_panel.write_line(f"{i}. {q}")
+                self.output_panel.write_line("")
+                self.output_panel.write_line(
+                    "[bold cyan]Type your answer in the command bar at the top (Output is read-only).[/bold cyan]"
+                )
+                return  # Wait for user input
         except Exception as exc:
             self.output_panel.write_warning(f"Could not generate task specification: {exc}")
 
@@ -396,14 +442,68 @@ Repository and task context:
             questions.append(stripped)
         return questions
 
-    async def _prompt_for_clarifications(self, questions: list[str]) -> tuple[str, list[str]]:
-        """Show modal for user to answer clarifying questions and add files."""
-        prompt_text = "\n".join(f"- {q}" for q in questions)
-        modal = ClarificationModal(prompt_text)
-        result = await self.push_screen_wait(modal)
-        if result:
-            return result.get("answers", ""), result.get("files", [])
-        return "", []
+    async def _handle_clarification_answer(self, answer: str) -> None:
+        """Process clarification answer from user input."""
+        answer = answer.strip()
+
+        if answer.lower() == "skip":
+            # User wants to skip clarifications
+            self.output_panel.write_line("[dim]Skipping clarifications...[/dim]")
+            self.waiting_for_clarification = False
+            self.clarification_questions = []
+            self.clarification_answers = []
+            self.clarification_task = None
+            self.clarification_brief = ""
+
+            # Restore input placeholder and focus
+            self._focus_command_input("", placeholder=self.default_input_placeholder)
+            return
+
+        # Add answer to list
+        self.clarification_answers.append(answer)
+        self.output_panel.write_line(f"[dim]Answer {len(self.clarification_answers)}: {answer}[/dim]")
+
+        # Check if we have all answers
+        if len(self.clarification_answers) >= len(self.clarification_questions):
+            # All questions answered, continue with spec generation
+            self.waiting_for_clarification = False
+
+            # Restore input placeholder and focus
+            self._focus_command_input("", placeholder=self.default_input_placeholder)
+
+            self.output_panel.write_line("")
+            self.output_panel.write_line("[dim]Sending clarifications back to Claude...[/dim]")
+
+            # Format answers
+            formatted_answers = "\n".join(
+                f"{i+1}. {q}\n   Answer: {a}"
+                for i, (q, a) in enumerate(zip(self.clarification_questions, self.clarification_answers))
+            )
+
+            # Generate refined spec
+            try:
+                claude = await self.router.route(ModelRole.ARCHITECT)
+                clarified_brief = self.clarification_brief + "\n\nClarification answers:\n" + formatted_answers
+
+                refined_spec = await claude.generate_spec(clarified_brief)
+                self.feature.save_task_spec(self.clarification_task.id, refined_spec)
+                self.context_panel.set_spec(refined_spec)
+                self.output_panel.write_success(
+                    f"Refined task specification saved to {self.feature.task_spec_path(self.clarification_task.id)}"
+                )
+            except Exception as exc:
+                self.output_panel.write_warning(f"Could not refine specification: {exc}")
+
+            # Reset clarification state
+            self.clarification_questions = []
+            self.clarification_answers = []
+            self.clarification_task = None
+            self.clarification_brief = ""
+        else:
+            # More questions remaining
+            remaining = len(self.clarification_questions) - len(self.clarification_answers)
+            self.output_panel.write_line(f"[dim]({remaining} question(s) remaining)[/dim]")
+            self._focus_command_input("", placeholder="Answer here (or type 'skip' to continue; press / to refocus)")
 
     def action_select_model(self) -> None:
         """Open the model selector modal."""
@@ -458,12 +558,22 @@ Repository and task context:
 
     def action_focus_command(self) -> None:
         """Focus the command input and pre-fill with /help."""
-        top_bar = self.query_one("#top-bar", TopBar)
-        input_widget = top_bar.query_one(Input)
-        input_widget.value = "/help"
-        self.set_focus(input_widget)
-        input_widget.cursor_position = len(input_widget.value)
+        self._focus_command_input("/help", placeholder=self.default_input_placeholder)
 
     def action_exit_or_confirm(self) -> None:
         """Exit on double Ctrl+C."""
         self.exit()
+
+    def log_task_conversation(self, task_id: str, role: str, message: str) -> None:
+        """Log a message to the task's conversation history."""
+        self.feature.append_task_conversation(task_id, role, message)
+
+    def _focus_command_input(self, prefill: str = "", placeholder: str | None = None) -> None:
+        """Focus the top command input with optional prefill/placeholder."""
+        top_bar = self.query_one("#top-bar", TopBar)
+        input_widget = top_bar.query_one(Input)
+        if placeholder is not None:
+            input_widget.placeholder = placeholder
+        input_widget.value = prefill
+        input_widget.cursor_position = len(prefill)
+        self.set_focus(input_widget)

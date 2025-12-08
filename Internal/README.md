@@ -116,10 +116,11 @@ Full Textual TUI with widgets and commands.
 
 **Test before moving on:**
 ```bash
-# Test interactive mode (will require manual testing)
+# Test console chat mode (manual)
 blueprint
 
-# Should launch TUI without errors
+# Launch the Textual TUI (manual)
+blueprint tui
 ```
 
 ---
@@ -319,7 +320,8 @@ src/blueprint/
 ### Entry Points
 
 ```bash
-blueprint                    # Interactive mode
+blueprint                    # Console chat (default interactive mode)
+blueprint tui                # Full-screen TUI
 blueprint run <feature>      # Static mode
 python -m blueprint          # Alternative entry
 ```
@@ -329,9 +331,9 @@ python -m blueprint          # Alternative entry
 Mark phases as complete:
 
 - [x] Phase 1: Foundation ✓
-- [ ] Phase 2: LLM Wrappers
-- [ ] Phase 3: Orchestration
-- [ ] Phase 4: Interactive Mode
+- [x] Phase 2: LLM Wrappers ✓
+- [x] Phase 3: Orchestration ✓
+- [ ] Phase 4: Interactive Mode (in progress)
 - [ ] Phase 5: Static Mode
 - [ ] Phase 6: Utilities
 - [ ] Phase 7: Documentation
@@ -352,13 +354,13 @@ After completing all phases:
 
 ```bash
 # Full workflow test
-blueprint                    # Create new feature
-# Enter brief, let it generate spec and tasks
-# Execute some tasks in interactive mode
-/tasks                       # Verify tasks listed
-/start                       # Execute a task
-/usage                       # Check usage stats
-/exit                        # Exit cleanly
+blueprint                    # Start console chat
+# Create or pick a task, run /tasks then /start
+/spec                        # View spec if present
+/quit                        # Exit cleanly
+
+# Optional: launch the TUI for layout checks
+blueprint tui
 
 # Test static mode
 blueprint run <feature>      # Run all tasks

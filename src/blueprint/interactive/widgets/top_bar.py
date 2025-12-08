@@ -143,6 +143,11 @@ class TopBar(Widget):
         title_widget = self.query_one("#title-status", Static)
         title_widget.update(title)
 
+    def set_input_placeholder(self, placeholder: str) -> None:
+        """Update the input placeholder text."""
+        input_widget = self.query_one("#command-input", Input)
+        input_widget.placeholder = placeholder
+
     class CommandSubmitted(Message):
         """Message sent when command is submitted."""
 

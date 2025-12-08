@@ -96,5 +96,18 @@ class TaskListWidget(Widget):
             self.post_message(self.NewTaskRequested())
             event.stop()
 
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        """Handle task selection from list."""
+        if event.list_view.index is not None and event.list_view.index < len(self.tasks):
+            selected_task = self.tasks[event.list_view.index]
+            self.post_message(self.TaskSelected(selected_task))
+
     class NewTaskRequested(Message):
         """Message sent when new task button is pressed."""
+
+    class TaskSelected(Message):
+        """Message sent when a task is selected from the list."""
+
+        def __init__(self, task: Task) -> None:
+            super().__init__()
+            self.task = task
