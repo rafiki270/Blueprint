@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Header, Input, Static
+from textual.widgets import Input
 
 from .commands import CommandHandler
-from .widgets import CommandBar, ContextPanel, OutputPanel, TaskListWidget, UsageModal
+from .widgets import ContextPanel, OutputPanel, TaskListWidget, TopBar, UsageModal
 from ..config import Config
 from ..models.router import ModelRouter
 from ..orchestrator.executor import TaskExecutor
@@ -22,14 +22,13 @@ class BlueprintApp(App):
     CSS = """
     Screen {
         layout: grid;
-        grid-size: 3 3;
-        grid-rows: auto 1fr auto;
-        grid-columns: 1fr 1fr 1fr;
-        grid-gutter: 0 1;
+        grid-size: 2 2;
+        grid-rows: auto 1fr;
+        grid-columns: 1fr 3fr;
     }
 
-    Header {
-        column-span: 3;
+    #top-bar {
+        column-span: 2;
     }
 
     #task-list-widget {
@@ -41,27 +40,10 @@ class BlueprintApp(App):
     }
 
     #context-panel {
+        display: none;
+        column-span: 2;
+        height: 0;
         border: tall;
-    }
-
-    #command-bar {
-        column-span: 3;
-        border: tall;
-        height: 1;
-        padding: 0 1;
-    }
-
-    #command-bar #command-bar-container {
-        layout: horizontal;
-        align: center middle;
-        height: 1;
-    }
-
-    #command-bar #command-input {
-        width: 1fr;
-        border: round;
-        height: 1;
-        padding: 0 1;
     }
     """
 
@@ -89,19 +71,18 @@ class BlueprintApp(App):
             self.feature,
             self,
         )
+        self.context_visible = False
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield TopBar(feature_name=self.feature.name, id="top-bar")
 
         self.task_list = TaskListWidget(id="task-list-widget")
         self.output_panel = OutputPanel(id="output-panel")
         self.context_panel = ContextPanel(id="context-panel")
-        self.command_bar = CommandBar(id="command-bar")
 
         yield self.task_list
         yield self.output_panel
         yield self.context_panel
-        yield self.command_bar
 
     async def on_mount(self) -> None:
         tasks = self.task_manager.list_all()
@@ -119,15 +100,39 @@ class BlueprintApp(App):
     async def on_ready(self) -> None:
         """Ensure command input is focused once the UI is ready."""
         self.action_focus_command()
-        # Force a visible block cursor in the input.
-        try:
-            command_input = self.command_bar.query_one(Input)
-            command_input.cursor_style = "block"
-        except Exception:
-            pass
 
-    async def on_command_bar_command_submitted(self, event: CommandBar.CommandSubmitted) -> None:
+    async def on_top_bar_command_submitted(self, event: TopBar.CommandSubmitted) -> None:
+        """Handle command submission from TopBar."""
         await self.command_handler.handle(event.command)
+
+    async def on_top_bar_context_toggled(self, event: TopBar.ContextToggled) -> None:
+        """Handle context pane toggle from TopBar."""
+        self.context_visible = not self.context_visible
+
+        context_pane = self.query_one("#context-panel", ContextPanel)
+
+        if self.context_visible:
+            # Show context pane
+            context_pane.styles.display = "block"
+            context_pane.styles.height = "30%"
+            context_pane.styles.min_height = 8
+            # Update grid to 3 rows
+            self.screen.styles.grid_size = (2, 3)
+            self.screen.styles.grid_rows = "auto 1fr auto"
+        else:
+            # Hide context pane
+            context_pane.styles.display = "none"
+            context_pane.styles.height = "0"
+            # Update grid to 2 rows
+            self.screen.styles.grid_size = (2, 2)
+            self.screen.styles.grid_rows = "auto 1fr"
+
+        self.refresh(layout=True)
+
+    async def on_top_bar_menu_toggled(self, event: TopBar.MenuToggled) -> None:
+        """Handle menu toggle from TopBar."""
+        # For now, just show help
+        await self.command_handler.cmd_help("")
 
     def action_stop_task(self) -> None:
         self.run_worker(self.command_handler.cmd_stop(""))
@@ -140,7 +145,9 @@ class BlueprintApp(App):
 
     def action_focus_command(self) -> None:
         """Focus the command input."""
-        self.set_focus(self.command_bar.query_one(Input))
+        top_bar = self.query_one("#top-bar", TopBar)
+        input_widget = top_bar.query_one(Input)
+        self.set_focus(input_widget)
 
     def action_exit_or_confirm(self) -> None:
         """Exit on double Ctrl+C."""
