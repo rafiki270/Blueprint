@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "blueprint"
+version = "0.1.0"
+description = "Multi-LLM development orchestrator with interactive and static modes."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Blueprint Contributors" }
+]
+dependencies = [
+  "click>=8.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "black>=23.0",
+  "ruff>=0.3",
+  "mypy>=1.10",
+  "pytest>=7.0",
+  "build>=1.0",
+  "twine>=4.0",
+]
+
+[project.urls]
+Homepage = "https://example.com/blueprint"
+Repository = "https://example.com/blueprint"
+
+[project.scripts]
+blueprint = "blueprint.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
