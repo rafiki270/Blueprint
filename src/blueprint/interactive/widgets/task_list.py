@@ -78,11 +78,11 @@ class TaskListWidget(Widget):
     @staticmethod
     def _get_status_color(status: TaskStatus) -> str:
         colors = {
-            TaskStatus.PENDING: "gray",
+            TaskStatus.PENDING: "#888888",
             TaskStatus.IN_PROGRESS: "yellow",
             TaskStatus.BLOCKED: "red",
             TaskStatus.COMPLETED: "green",
-            TaskStatus.SKIPPED: "dim",
+            TaskStatus.SKIPPED: "#555555",
         }
         return colors.get(status, "white")
 

@@ -7,6 +7,7 @@ from .usage_modal import UsageModal
 from .top_bar import TopBar
 from .new_task_modal import NewTaskModal
 from .model_selector_modal import ModelSelectorModal
+from .clarification_modal import ClarificationModal
 
 __all__ = [
     "TaskListWidget",
@@ -16,4 +17,5 @@ __all__ = [
     "TopBar",
     "NewTaskModal",
     "ModelSelectorModal",
+    "ClarificationModal",
 ]

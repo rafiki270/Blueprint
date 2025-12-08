@@ -13,7 +13,8 @@ class Feature:
 
     def __init__(self, name: str) -> None:
         self.name = name
-        self.base_dir = Path.home() / ".blueprint" / name
+        self.base_dir = self._base_root() / name
+        self.tasks_dir = self.base_dir / "tasks"
         self.spec_file = self.base_dir / "spec.md"
         self.tasks_file = self.base_dir / "tasks.json"
         self.tasks_status_file = self.base_dir / "tasks_status.json"
@@ -27,7 +28,7 @@ class Feature:
     def initialize(self) -> None:
         """Create feature directory structure and default files."""
         Persistence.ensure_dir(self.base_dir)
-        for directory in (self.logs_dir, self.partial_dir, self.summaries_dir):
+        for directory in (self.logs_dir, self.partial_dir, self.summaries_dir, self.tasks_dir):
             Persistence.ensure_dir(directory)
 
         # Initialize common JSON files if missing.
@@ -69,10 +70,31 @@ class Feature:
         tasks = data.get("tasks") if isinstance(data, dict) else None
         return tasks or []
 
+    def task_dir(self, task_id: str) -> Path:
+        """Directory for a specific task."""
+        return self.tasks_dir / task_id
+
+    def task_spec_path(self, task_id: str) -> Path:
+        """Spec path for a specific task."""
+        return self.task_dir(task_id) / "spec.md"
+
+    def save_task_spec(self, task_id: str, content: str) -> None:
+        """Save per-task specification markdown."""
+        dir_path = self.task_dir(task_id)
+        Persistence.ensure_dir(dir_path)
+        (dir_path / "spec.md").write_text(content, encoding="utf-8")
+
+    def load_task_spec(self, task_id: str) -> Optional[str]:
+        """Load per-task specification if present."""
+        path = self.task_spec_path(task_id)
+        if not path.exists():
+            return None
+        return path.read_text(encoding="utf-8")
+
     @staticmethod
     def list_features() -> List[str]:
         """List all available features."""
-        base_dir = Path.home() / ".blueprint"
+        base_dir = Feature._base_root()
         if not base_dir.exists():
             return []
         return sorted([p.name for p in base_dir.iterdir() if p.is_dir()])
@@ -82,7 +104,7 @@ class Feature:
         """Find features with incomplete tasks."""
         active: List[str] = []
         for name in Feature.list_features():
-            base_dir = Path.home() / ".blueprint" / name
+            base_dir = Feature._base_root() / name
             tasks_status_file = base_dir / "tasks_status.json"
             tasks_file = base_dir / "tasks.json"
             statuses: Dict[str, str] = {}
@@ -100,3 +122,8 @@ class Feature:
             if any(status not in ("completed", "skipped") for status in statuses.values()):
                 active.append(name)
         return active
+
+    @staticmethod
+    def _base_root() -> Path:
+        """Root folder for per-project state (relative to launch directory)."""
+        return Path.cwd() / ".blueprint"
