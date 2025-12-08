@@ -63,6 +63,7 @@ class ChatRequest:
     """Normalized request sent to providers."""
 
     messages: Sequence[ChatMessage]
+    provider: Optional[Provider] = None
     model: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None

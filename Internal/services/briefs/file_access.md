@@ -94,3 +94,13 @@ All methods callable via tool-calling; orchestrator injects permission checks an
 5. **Summaries/Cache**: File summaries for large files; token-aware excerpts; optional semantic index.
 6. **Conflict Resolution**: Automated merge suggestions via review backend; user-approved merges.
 7. **Docs/UI**: Publish `LLM_FILE_ACCESS.md`; add `/files`, `/open`, `/patch`, `/stats files` commands in CLI/TUI; budget/limits for read/write operations.
+
+## Implementation Checklist
+- [ ] Registry builder with metadata (paths, hashes, timestamps, tags)
+- [ ] Tool-call surface for `list_files`, `read_file`, `read_lines`
+- [ ] Write/apply patch flow with conflict detection
+- [ ] Diff/history store and audit logging
+- [ ] Summaries/cache for large files and excerpts
+- [ ] Permission/approval enforcement for file ops
+- [ ] Integration into CLI/TUI (`/files`, `/patch`, `/stats files`)
+- [ ] Documentation file `LLM_FILE_ACCESS.md`

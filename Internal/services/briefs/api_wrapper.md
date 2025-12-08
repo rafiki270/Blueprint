@@ -132,3 +132,15 @@ console.log(plan.steps);
 5) Add planning coordinator and cost/budget enforcement.
 6) Add caching and optional prompt-caching hooks.
 7) Harden validation, error reporting, and add unit/integration tests.
+
+## Implementation Checklist
+- [x] Core types and unified interface (`LLMClient`, adapters)
+- [x] Provider adapters (local, cloud, fallback, heavy) with chat/stream/list_models
+- [x] Adapter factory with routing/fallback chain
+- [x] Streaming handler with retry/backoff
+- [x] Global credentials manager
+- [x] Usage tracker with cost hooks
+- [x] Cache manager
+- [x] Tool engine and approval gating
+- [x] Planning mode coordinator
+- [ ] Tests and documentation updates aligned to the wrapper API

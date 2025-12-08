@@ -2019,3 +2019,13 @@ This file-access subsystem provides a production-ready foundation for multi-LLM 
 - Comprehensive audit trail
 
 The phased implementation roadmap ensures incremental delivery of value, starting with basic file reading and building up to advanced conflict resolution and caching.
+
+## Implementation Checklist
+- [ ] File registry with metadata (path, size, hash, tags) and refresh
+- [ ] Tool-call surface for `list_files` / `read_file` / `read_lines`
+- [ ] Write/apply patch flow with conflict detection
+- [ ] Diff/history store and audit logging
+- [ ] Summaries/cache for large files and excerpts
+- [ ] Permission/approval enforcement for file operations
+- [ ] UI/CLI integration (`/files`, `/patch`, `/stats files`)
+- [ ] Documentation updates (`LLM_FILE_ACCESS.md`)

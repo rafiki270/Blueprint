@@ -3059,3 +3059,13 @@ The context distillation system solves a critical problem in multi-LLM orchestra
 - Leverage each model's strengths (Gemini for analysis, others for execution)
 
 The design follows Python best practices, uses type hints throughout, and integrates seamlessly with the LLM wrapper layer designed in `LLM_API_WRAPPER.md`.
+
+## Implementation Checklist
+- [ ] Backend interfaces and adapters wired into orchestrator/router
+- [ ] Session + persistent context stores with persona injection and distillation
+- [ ] Routing/fallback logic with budget awareness and task-type mapping
+- [ ] Tool runner with permission modes and audit logging
+- [ ] Usage tracking and quota enforcement hooks
+- [ ] Task queue with dependency handling and history
+- [ ] Streaming validation/recovery paths
+- [ ] Documentation and CLI commands (`/stats`, `/mode`, personas)

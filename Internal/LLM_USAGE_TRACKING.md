@@ -2174,3 +2174,12 @@ This usage tracking subsystem provides comprehensive observability for multi-LLM
 - CLI: `/stats` and `/export` commands
 
 The system balances completeness with performance, providing detailed tracking without significantly impacting LLM call latency.
+
+## Implementation Checklist
+- [ ] Usage entry/session schema implemented with persistence (SQLite/JSONL)
+- [ ] Per-call tracking hooks wired into adapters/orchestrator
+- [ ] Session-level aggregation and lifetime/project summaries
+- [ ] Pricing catalog with cost estimation and quota enforcement
+- [ ] Streaming updates for partial usage/finalization
+- [ ] Export/reporting (JSON/CSV) and CLI `/stats` integration
+- [ ] Documentation updates (`LLM_USAGE_TRACKING.md`)

@@ -191,3 +191,12 @@ class UsageTracker:
 
 Prompt (for traceability):
 “You are a senior system architect specializing in multi-LLM orchestration and observability...” (full brief in request above).
+
+## Implementation Checklist
+- [ ] UsageEntry/session schema implemented with persistence (JSONL/SQLite)
+- [ ] Per-call tracking hooks integrated with adapters/orchestrator
+- [ ] Session manager with aggregates and lifetime/project summaries
+- [ ] Cost estimation via pricing catalog and quota/budget enforcement
+- [ ] Streaming chunk updates and finalization flow
+- [ ] Export/reporting (JSON/CSV) and CLI `/stats` integration
+- [ ] Documentation file `LLM_USAGE.md` describing storage, rotation, interpretation

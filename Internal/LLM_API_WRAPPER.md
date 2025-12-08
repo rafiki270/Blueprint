@@ -4,6 +4,19 @@
 
 This document specifies a production-ready LLM orchestration wrapper that unifies access to multiple backends (OpenAI, Claude, Gemini, Ollama, and self-reference to Opus for heavy reasoning). The wrapper provides a consistent interface, handles streaming with error recovery, manages credentials globally, tracks usage/costs, and supports advanced features like tool-calling and planning mode.
 
+### Implementation Checklist (tracking the work in this repo)
+- [x] Core shared types/base adapter interface defined in code
+- [x] Provider adapters stubbed/implemented for OpenAI, Claude, Gemini, and Ollama
+- [x] Global credentials loader added
+- [x] Unified LLMClient facade with routing/fallback logic
+- [x] Streaming handler with validation/retry/fallback
+- [x] Usage tracker with cost accounting and quotas
+- [x] Cache manager for prompt/response reuse
+- [x] Tool engine and coordinated tool-calling flow
+- [x] Planning mode coordinator (heavy-model planner)
+- [x] Retry/fallback manager + error classification
+- [ ] Tests and documentation updates aligned to the wrapper API
+
 ---
 
 ## 1. High-Level Architecture
@@ -1915,3 +1928,16 @@ This architecture provides a robust, production-ready foundation for unifying mu
 6. **Performance** - Streaming support, caching, parallel requests
 
 The modular design allows incremental implementation and easy testing of individual components. Start with Phase 1 (foundation) and gradually add providers and advanced features.
+
+## Implementation Checklist
+- [x] Core shared types/base adapter interface
+- [x] Provider adapters (OpenAI, Claude, Gemini, Ollama)
+- [x] Global credentials loader
+- [x] Unified LLMClient with routing/fallback
+- [x] Streaming handler with validation/retry/fallback
+- [x] Usage tracker with cost accounting and quotas
+- [x] Cache manager
+- [x] Tool engine and tool-calling flow
+- [x] Planning mode coordinator
+- [x] Retry/fallback manager + error classification
+- [ ] Tests and documentation updates aligned to the wrapper API

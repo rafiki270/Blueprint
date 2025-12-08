@@ -2,6 +2,7 @@
 
 from .base import (
     BaseAdapter,
+    BaseLLM,
     ChatMessage,
     ChatRequest,
     ChatResponse,
@@ -15,11 +16,15 @@ from .base import (
     ToolCall,
     Usage,
 )
+from .cache import CacheManager
+from .client import LLMClient, AdapterFactory
 from .claude import ClaudeAdapter
 from .codex import CodexAdapter, OpenAIAdapter
 from .credentials import CredentialsManager
 from .deepseek import DeepSeekAdapter, OllamaAdapter
 from .gemini import GeminiAdapter
+from .streaming import StreamHandler
+from .tool_engine import ToolEngine
 from .router import ModelRole, ModelRouter
 
 # Backwards-compatible aliases for previous naming.
@@ -31,6 +36,7 @@ BaseLLM = BaseAdapter
 
 __all__ = [
     "BaseAdapter",
+    "BaseLLM",
     "ChatMessage",
     "ChatRequest",
     "ChatResponse",
@@ -43,12 +49,17 @@ __all__ = [
     "StreamChunk",
     "ToolCall",
     "Usage",
+    "CacheManager",
+    "LLMClient",
+    "AdapterFactory",
     "ClaudeAdapter",
     "OpenAIAdapter",
     "CodexAdapter",
     "OllamaAdapter",
     "DeepSeekAdapter",
     "GeminiAdapter",
+    "StreamHandler",
+    "ToolEngine",
     "ModelRouter",
     "ModelRole",
     "CredentialsManager",

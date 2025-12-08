@@ -180,3 +180,13 @@ class Task(TypedDict):
 6) **Tasks & Workflow**: Task model, queue, history; integrate with orchestrator and tools.
 7) **Validation & Recovery**: Streaming validation, malformed-output handling, retry/fallback strategies.
 8) **Documentation & Examples**: Developer guide, config reference, persona defaults, `/stats` and `/mode` commands.
+
+## Implementation Checklist
+- [ ] Backend interfaces and adapters (local, fast, review, planner) wired into orchestrator
+- [ ] Session/persistent context store with persona injection and context shaping
+- [ ] Router/fallback logic with task-type routing and budget awareness
+- [ ] Tool runner with permission modes and audit logging
+- [ ] Usage tracking hooks in orchestrator calls
+- [ ] Task queue with task-scoped context/history
+- [ ] Streaming validation and recovery paths
+- [ ] Developer docs and CLI commands for stats/mode/persona
