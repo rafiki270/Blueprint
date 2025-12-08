@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Input
+from textual.widgets import Footer, Input
 
 from .commands import CommandHandler
 from .widgets import ContextPanel, OutputPanel, TaskListWidget, TopBar, UsageModal
@@ -22,8 +22,8 @@ class BlueprintApp(App):
     CSS = """
     Screen {
         layout: grid;
-        grid-size: 2 2;
-        grid-rows: auto 1fr;
+        grid-size: 2 3;
+        grid-rows: auto 1fr auto;
         grid-columns: 1fr 3fr;
         overflow: hidden;
     }
@@ -52,14 +52,20 @@ class BlueprintApp(App):
         padding: 0;
         overflow-y: auto;
     }
+
+    Footer {
+        column-span: 2;
+        background: $primary;
+        margin-top: 1;
+    }
     """
 
     BINDINGS = [
-        Binding("ctrl+s", "stop_task", "Stop"),
-        Binding("ctrl+c", "exit_or_confirm", "Exit"),
+        Binding("ctrl+p", "command_palette", "Menu"),
         Binding("ctrl+u", "show_usage", "Usage"),
-        Binding("f1", "show_help", "Help"),
-        Binding("/", "focus_command", "Command", show=False),
+        Binding("ctrl+s", "stop_task", "Stop Task"),
+        Binding("ctrl+c", "exit_or_confirm", "Quit"),
+        Binding("/", "focus_command", "/help", show=True, key_display="/help"),
     ]
 
     def __init__(self, feature_name: str, *args, **kwargs):
@@ -90,6 +96,7 @@ class BlueprintApp(App):
         yield self.task_list
         yield self.output_panel
         yield self.context_panel
+        yield Footer()
 
     async def on_mount(self) -> None:
         tasks = self.task_manager.list_all()
@@ -119,20 +126,20 @@ class BlueprintApp(App):
         context_pane = self.query_one("#context-panel", ContextPanel)
 
         if self.context_visible:
-            # Show context pane
+            # Show context pane - grid becomes 2x4 (TopBar, Panels, Context, Footer)
             context_pane.styles.display = "block"
             context_pane.styles.height = "30%"
             context_pane.styles.min_height = 8
+            # Update grid to 4 rows
+            self.screen.styles.grid_size = (2, 4)
+            self.screen.styles.grid_rows = "auto 1fr auto auto"
+        else:
+            # Hide context pane - grid becomes 2x3 (TopBar, Panels, Footer)
+            context_pane.styles.display = "none"
+            context_pane.styles.height = "0"
             # Update grid to 3 rows
             self.screen.styles.grid_size = (2, 3)
             self.screen.styles.grid_rows = "auto 1fr auto"
-        else:
-            # Hide context pane
-            context_pane.styles.display = "none"
-            context_pane.styles.height = "0"
-            # Update grid to 2 rows
-            self.screen.styles.grid_size = (2, 2)
-            self.screen.styles.grid_rows = "auto 1fr"
 
         self.refresh(layout=True)
 
@@ -150,10 +157,12 @@ class BlueprintApp(App):
         self.run_worker(self.command_handler.cmd_help(""))
 
     def action_focus_command(self) -> None:
-        """Focus the command input."""
+        """Focus the command input and pre-fill with /help."""
         top_bar = self.query_one("#top-bar", TopBar)
         input_widget = top_bar.query_one(Input)
+        input_widget.value = "/help"
         self.set_focus(input_widget)
+        input_widget.cursor_position = len(input_widget.value)
 
     def action_exit_or_confirm(self) -> None:
         """Exit on double Ctrl+C."""
