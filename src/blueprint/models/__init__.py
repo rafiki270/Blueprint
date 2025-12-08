@@ -1,21 +1,61 @@
-"""LLM CLI wrappers and routing."""
+"""LLM adapters and routing."""
 
-from .base import BaseLLM, LLMException, LLMUnavailableException, LLMExecutionException
-from .claude import ClaudeCLI
-from .gemini import GeminiCLI
-from .deepseek import DeepSeekCLI
-from .codex import CodexCLI
-from .router import ModelRouter, ModelRole
+from .base import (
+    BaseAdapter,
+    ChatMessage,
+    ChatRequest,
+    ChatResponse,
+    LLMExecutionException,
+    LLMException,
+    LLMUnavailableException,
+    ModelInfo,
+    Provider,
+    ProviderHealth,
+    StreamChunk,
+    ToolCall,
+    Usage,
+)
+from .claude import ClaudeAdapter
+from .codex import CodexAdapter, OpenAIAdapter
+from .credentials import CredentialsManager
+from .deepseek import DeepSeekAdapter, OllamaAdapter
+from .gemini import GeminiAdapter
+from .router import ModelRole, ModelRouter
+
+# Backwards-compatible aliases for previous naming.
+ClaudeCLI = ClaudeAdapter
+GeminiCLI = GeminiAdapter
+DeepSeekCLI = OllamaAdapter
+CodexCLI = OpenAIAdapter
+BaseLLM = BaseAdapter
 
 __all__ = [
-    "BaseLLM",
+    "BaseAdapter",
+    "ChatMessage",
+    "ChatRequest",
+    "ChatResponse",
     "LLMException",
     "LLMUnavailableException",
     "LLMExecutionException",
+    "ModelInfo",
+    "Provider",
+    "ProviderHealth",
+    "StreamChunk",
+    "ToolCall",
+    "Usage",
+    "ClaudeAdapter",
+    "OpenAIAdapter",
+    "CodexAdapter",
+    "OllamaAdapter",
+    "DeepSeekAdapter",
+    "GeminiAdapter",
+    "ModelRouter",
+    "ModelRole",
+    "CredentialsManager",
+    # Legacy exports
     "ClaudeCLI",
     "GeminiCLI",
     "DeepSeekCLI",
     "CodexCLI",
-    "ModelRouter",
-    "ModelRole",
+    "BaseLLM",
 ]

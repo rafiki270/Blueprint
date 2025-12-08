@@ -55,7 +55,10 @@ class Supervisor:
         while iteration < max_iterations:
             print(f"\nIteration {iteration + 1}/{max_iterations}")
 
-            review = await self.review_task_output(task, current_output)
+            try:
+                review = await self.review_task_output(task, current_output)
+            except Exception as exc:
+                raise RuntimeError(f"Codex review failed: {exc}") from exc
 
             if review.get("approved"):
                 print("✓ Output approved")

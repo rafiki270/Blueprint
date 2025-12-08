@@ -34,12 +34,8 @@ class Pipeline:
             print("Generating specification using Claude...")
             claude = await self.router.route(ModelRole.ARCHITECT)
 
-            spec_lines: List[str] = []
-            async for line in claude.generate_spec(brief):
-                print(line)
-                spec_lines.append(line)
-
-            spec = "\n".join(spec_lines)
+            spec = await claude.generate_spec(brief)
+            print(spec)
 
         self.feature.save_spec(spec)
         print(f"\nSpecification saved to {self.feature.spec_file}")

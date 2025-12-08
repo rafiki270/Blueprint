@@ -1,112 +1,159 @@
-"""Base abstractions for LLM CLI wrappers."""
+"""Shared types and base classes for API-backed LLM adapters."""
 
 from __future__ import annotations
 
-import asyncio
-from abc import ABC, abstractmethod
-from typing import AsyncGenerator, List, Optional
+import abc
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, AsyncGenerator, Dict, List, Mapping, MutableMapping, Optional, Sequence
 
 
 class LLMException(Exception):
-    """Base exception for LLM errors."""
+    """Base exception for LLM failures."""
 
 
 class LLMUnavailableException(LLMException):
-    """Raised when an LLM CLI is not available."""
+    """Raised when an LLM provider cannot be reached or is not configured."""
 
 
 class LLMExecutionException(LLMException):
-    """Raised when execution of an LLM command fails."""
+    """Raised when a request to an LLM fails."""
 
 
-class BaseLLM(ABC):
-    """Base class for all LLM CLI wrappers."""
+class Provider(Enum):
+    """Supported LLM providers."""
 
-    def __init__(self, cli_command: str) -> None:
-        self.cli_command = cli_command
-        self.process: Optional[asyncio.subprocess.Process] = None
+    OPENAI = "openai"
+    CLAUDE = "claude"
+    GEMINI = "gemini"
+    OLLAMA = "ollama"
 
-    @abstractmethod
-    async def check_availability(self) -> bool:
-        """Check if LLM CLI is available."""
 
-    async def execute(
-        self, prompt: str, stream: bool = True, extra_args: Optional[List[str]] = None
-    ) -> AsyncGenerator[str, None]:
+@dataclass
+class ChatMessage:
+    """Single chat message."""
+
+    role: str
+    content: str
+    name: Optional[str] = None
+    tool_call_id: Optional[str] = None
+
+
+@dataclass
+class ToolCall:
+    """Tool invocation emitted by a model."""
+
+    id: str
+    name: str
+    arguments: Mapping[str, Any]
+
+
+@dataclass
+class Usage:
+    """Token usage details."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    estimated_cost: Optional[float] = None
+
+
+@dataclass
+class ChatRequest:
+    """Normalized request sent to providers."""
+
+    messages: Sequence[ChatMessage]
+    model: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    top_p: Optional[float] = None
+    stop: Optional[Sequence[str]] = None
+    tools: Optional[Sequence[Mapping[str, Any]]] = None
+    metadata: MutableMapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ChatResponse:
+    """Normalized chat response."""
+
+    content: str
+    provider: Provider
+    model: str
+    usage: Optional[Usage] = None
+    finish_reason: Optional[str] = None
+    tool_calls: Optional[List[ToolCall]] = None
+    metadata: MutableMapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class StreamChunk:
+    """Chunk of streamed output."""
+
+    delta: str
+    is_done: bool
+    provider: Provider
+    model: Optional[str] = None
+    usage: Optional[Usage] = None
+    tool_call: Optional[ToolCall] = None
+    error: Optional[Exception] = None
+
+
+@dataclass
+class ModelInfo:
+    """Information about an available model."""
+
+    id: str
+    provider: Provider
+    context_window: Optional[int] = None
+    capabilities: Optional[Sequence[str]] = None
+
+
+@dataclass
+class ProviderHealth:
+    """Lightweight health check status."""
+
+    provider: Provider
+    status: str
+    latency_ms: Optional[float] = None
+
+
+class BaseAdapter(abc.ABC):
+    """Abstract base for provider adapters."""
+
+    provider: Provider
+
+    @abc.abstractmethod
+    async def chat(self, request: ChatRequest) -> ChatResponse:
+        """Send a non-streaming chat request."""
+
+    @abc.abstractmethod
+    async def stream_chat(self, request: ChatRequest) -> AsyncGenerator[StreamChunk, None]:
+        """Stream chat output incrementally."""
+
+    @abc.abstractmethod
+    async def list_models(self) -> List[ModelInfo]:
+        """List models accessible to this provider."""
+
+    @abc.abstractmethod
+    async def check_health(self) -> ProviderHealth:
+        """Return provider reachability status."""
+
+    async def execute(self, prompt: str, stream: bool = True, model: Optional[str] = None):
         """
-        Execute LLM command with prompt.
+        Compatibility helper: send a simple user prompt and yield text.
 
-        Args:
-            prompt: The prompt to send to the LLM.
-            stream: Whether to stream output line by line.
-            extra_args: Additional CLI arguments to prepend before the prompt.
+        Streamed execution yields incremental text deltas; non-streaming yields a single string.
         """
-        if not await self.check_availability():
-            raise LLMUnavailableException(f"{self.cli_command} is not available")
-
-        try:
-            args = [self.cli_command]
-            if extra_args:
-                args.extend(extra_args)
-            args.append(prompt)
-
-            self.process = await asyncio.create_subprocess_exec(
-                *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-
-            if stream:
-                async for line in self._stream_output():
-                    yield line
-                await self._ensure_success()
-            else:
-                stdout, stderr = await self.process.communicate()
-                if self.process.returncode != 0:
-                    raise LLMExecutionException(f"Command failed: {stderr.decode(errors='replace')}")
-                yield stdout.decode(errors="replace")
-
-        except Exception as exc:
-            await self.stop()
-            raise LLMExecutionException(f"Execution failed: {exc}") from exc
-
-    async def _stream_output(self) -> AsyncGenerator[str, None]:
-        """Stream stdout line by line."""
-        if not self.process or not self.process.stdout:
+        request = ChatRequest(messages=[ChatMessage(role="user", content=prompt)], model=model)
+        if stream:
+            async for chunk in self.stream_chat(request):
+                if chunk.delta:
+                    yield chunk.delta
             return
 
-        while True:
-            line = await self.process.stdout.readline()
-            if not line:
-                break
-            yield line.decode(errors="replace").rstrip()
+        response = await self.chat(request)
+        yield response.content
 
-    async def _ensure_success(self) -> None:
-        """Ensure process completed successfully after streaming."""
-        if not self.process:
-            return
-
-        await self.process.wait()
-        if self.process.returncode and self.process.returncode != 0:
-            stderr_content = ""
-            if self.process.stderr:
-                stderr_content = (await self.process.stderr.read()).decode(errors="replace")
-            raise LLMExecutionException(f"Command failed: {stderr_content}")
-
-    async def stop(self) -> None:
-        """Stop the running process gracefully."""
-        if not self.process:
-            return
-
-        try:
-            self.process.terminate()
-            await asyncio.wait_for(self.process.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
-            self.process.kill()
-            await self.process.wait()
-        finally:
-            self.process = None
-
-    def is_running(self) -> bool:
-        """Check if process is currently running."""
-        return self.process is not None and self.process.returncode is None
+    async def get_context_limit(self) -> Optional[int]:
+        """Return an optional context window if discoverable."""
+        return None

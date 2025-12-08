@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Iterable, List, Optional, Union
 
 import click
@@ -12,6 +13,7 @@ from .models.base import LLMExecutionException, LLMUnavailableException
 from .models.router import ModelRole, ModelRouter
 from .models.deepseek import DeepSeekCLI
 from .orchestrator.executor import TaskExecutor
+from .orchestrator.supervisor import Supervisor
 from .state.feature import Feature
 from .state.tasks import Task, TaskManager, TaskStatus, TaskType
 
@@ -36,17 +38,24 @@ class ConsoleChat:
         self.task_manager = TaskManager(self.feature.base_dir)
         self.router = ModelRouter(self.config)
         self.executor = TaskExecutor(self.task_manager, self.router, self.feature.base_dir)
+        self.supervisor = Supervisor(self.router, self.feature.base_dir)
 
         self.current_task: Optional[Task] = None
         self.context_limit: Optional[int] = None
+        self.context_budget_ratio: float = 0.6  # use up to 60% of coder context
 
     async def run(self) -> None:
         """Start the console chat session."""
-        click.echo(f"Blueprint console mode - feature: {self.feature.name}")
+        self._print_header()
         await self.router.check_availability()
 
-        await self._entry_flow()
-        await self._chat_loop()
+        try:
+            await self._entry_flow()
+            await self._chat_loop()
+        except KeyboardInterrupt:
+            click.echo("\nExiting Blueprint.")
+        finally:
+            await self._shutdown()
 
     async def _entry_flow(self) -> None:
         """Handle initial task selection flow."""
@@ -58,8 +67,8 @@ class ConsoleChat:
                 self._reset_session_context(self.current_task)
             return
 
-        click.echo("Select an option: 1) Create new task  2) Work on existing task")
-        click.echo("Use up/down and Enter, or type 1/2. (q to quit)")
+        click.echo(self._color("Select an option: 1) Create new task  2) Work on existing task", "accent"))
+        click.echo(self._muted("Use up/down and Enter, or type 1/2. (q to quit)"))
         choice = self._prompt_choice(["Create new task", "Work on existing task"])
 
         if choice is None:
@@ -73,10 +82,10 @@ class ConsoleChat:
 
     async def _chat_loop(self) -> None:
         """Main chat loop."""
-        click.echo("\n\033[1mType /help for commands. Press Ctrl+C to exit.\033[0m")
+        click.echo("\n" + self._bold(self._color("Type /help for commands. Press Ctrl+C to exit.", "primary")))
         while True:
             try:
-                prompt = await asyncio.to_thread(input, self._prompt_label())
+                prompt = input(self._prompt_label())
             except (KeyboardInterrupt, EOFError):
                 click.echo("\nExiting Blueprint.")
                 return
@@ -164,11 +173,27 @@ class ConsoleChat:
 
         if cmd == "/clear":
             self._clear_session_context()
-            click.echo("Session context cleared.")
+            click.echo(self._color("Session context cleared.", "primary"))
             return True
 
         if cmd in ("/context", "/ctx"):
             self._print_context_usage()
+            return True
+
+        if cmd == "/ls":
+            await self._cmd_ls(arg)
+            return True
+
+        if cmd == "/read":
+            await self._cmd_read(arg)
+            return True
+
+        if cmd in ("/find", "/rg"):
+            await self._cmd_find(arg)
+            return True
+
+        if cmd in ("/start", "/run"):
+            await self._run_current_task()
             return True
 
         click.echo("Unknown command. Type /help for options.")
@@ -176,21 +201,27 @@ class ConsoleChat:
 
     def _print_help(self) -> None:
         click.echo(
-            """
-Commands:
-  /help           Show this help
-  /tasks          List tasks with status
-  /task <id>      Switch to a task (or /task to select)
-  /new            Create a new task
-  /start          Execute the next pending task
-  /done <id>      Mark task complete
-  /redo <id>      Mark task pending
-  /spec           Show the feature spec (if present)
-  /context        Show session context usage vs limit (if available)
-  /clear          Clear current session context
-  /exit, /quit    Leave console mode
-
-Anything else is sent to the configured model for a quick chat."""
+            "\n".join(
+                [
+                    self._bold(self._color("Commands:", "primary")),
+                    f"  {self._color('/help', 'accent'):15} Show this help",
+                    f"  {self._color('/tasks', 'accent'):15} List tasks with status",
+                    f"  {self._color('/task <id>', 'accent'):15} Switch to a task (or /task to select)",
+                    f"  {self._color('/new', 'accent'):15} Create a new task",
+                    f"  {self._color('/run', 'accent'):15} Execute current task (code + review loop) [/start alias]",
+                    f"  {self._color('/done <id>', 'accent'):15} Mark task complete",
+                    f"  {self._color('/redo <id>', 'accent'):15} Mark task pending",
+                    f"  {self._color('/spec', 'accent'):15} Show the feature spec (if present)",
+                    f"  {self._color('/ls [path]', 'accent'):15} List files (default: cwd)",
+                    f"  {self._color('/read <path>', 'accent'):15} Read file into context",
+                    f"  {self._color('/find <pat> [path]', 'accent'):15} Ripgrep search (default path: cwd)",
+                    f"  {self._color('/context', 'accent'):15} Show session context usage vs limit",
+                    f"  {self._color('/clear', 'accent'):15} Clear current session context",
+                    f"  {self._color('/exit, /quit', 'accent'):15} Leave console mode",
+                    "",
+                    self._muted("Anything else is sent to the configured model for a quick chat."),
+                ]
+            )
         )
 
     async def _create_task_flow(self) -> Optional[Task]:
@@ -206,7 +237,7 @@ Anything else is sent to the configured model for a quick chat."""
             return None
 
         task = self.task_manager.create(description, description, TaskType.CODE)
-        click.echo(f"Created task [{task.id}].")
+        click.echo(self._color(f"Created task [{task.id}].", "primary"))
         self._reset_session_context(task)
         return task
 
@@ -218,7 +249,10 @@ Anything else is sent to the configured model for a quick chat."""
             return None
 
         click.echo(
-            "Select a task (1-{0}), or up/down + Enter. n for new, q to cancel.".format(len(tasks))
+            self._color(
+                "Select a task (1-{0}), or up/down + Enter. n for new, q to cancel.".format(len(tasks)),
+                "accent",
+            )
         )
         options = [self._task_line(task) for task in tasks]
         choice = self._prompt_choice(options, allow_new=True)
@@ -232,16 +266,61 @@ Anything else is sent to the configured model for a quick chat."""
         return selected
 
     async def _start_next_task(self) -> None:
-        """Execute the next pending task."""
-        next_task = self.task_manager.get_next()
-        if not next_task:
-            click.echo("No pending tasks.")
+        """(Deprecated) Execute the next pending task."""
+        await self._run_current_task()
+
+    async def _run_current_task(self) -> None:
+        """Execute the current task with review loop (single-task focus)."""
+        task = self.current_task or self.task_manager.get_next()
+        if not task:
+            click.echo(self._color("No task selected or pending.", "warning"))
             return
 
-        self.current_task = next_task
-        click.echo(f"Starting task: [{next_task.id}] {next_task.title}")
-        await self.executor.execute_task(next_task)
+        self.current_task = task
+        code_path = self.feature.base_dir / "partial" / f"{task.id}_code.py"
+
+        # If already completed and code exists, run review-only to avoid regenerating.
+        if task.status == TaskStatus.COMPLETED and code_path.exists():
+            click.echo(self._color(f"Reviewing existing output for [{task.id}] without regeneration.", "accent"))
+            await self._review_code_task(task, code_path)
+            return
+
+        click.echo(self._color(f"Executing task: [{task.id}] {task.title}", "primary"))
+        self.executor.run_context = self._prepare_run_context()
+        success = await self.executor.execute_task(task)
+        if not success:
+            click.echo(self._color("Execution failed.", "warning"))
+            return
+
+        if task.type == TaskType.CODE:
+            if code_path.exists():
+                await self._review_code_task(task, code_path)
+            else:
+                click.echo(self._color("No code output found for review.", "warning"))
+
         self._print_tasks(self.task_manager.list_all())
+
+    async def _review_code_task(self, task: Task, code_path: Path) -> None:
+        """Run Codex review loop on a code artifact."""
+        code_content = code_path.read_text(encoding="utf-8")
+        click.echo(self._color("Reviewing with Codex...", "accent"))
+        try:
+            approved, final_output = await self.supervisor.iterative_correction(task, code_content)
+            if approved:
+                click.echo(self._color("Code approved by Codex.", "primary"))
+            else:
+                self.task_manager.mark_redo(task.id)
+                click.echo(
+                    self._color("Review failed; task reset to pending for manual follow-up.", "warning")
+                )
+        except Exception as exc:  # pragma: no cover - defensive
+            msg = str(exc) or repr(exc)
+            click.echo(
+                self._color(
+                    f"Codex review unavailable or failed: {msg}. Proceeding without automated review.",
+                    "warning",
+                )
+            )
 
     def _print_tasks(self, tasks: List[Task]) -> None:
         """Pretty-print tasks."""
@@ -255,21 +334,22 @@ Anything else is sent to the configured model for a quick chat."""
     async def _chat_with_model(self, prompt: str) -> None:
         """Send free-form prompt to routed model and stream output."""
         self._append_conversation("user", prompt)
+        self._append_context("user", prompt)
 
         try:
             model = await self.router.route(ModelRole.CODER)
         except LLMUnavailableException as exc:
-            click.echo(f"Model unavailable: {exc}")
+            click.echo(self._color(f"Model unavailable: {exc}", "warning"))
             return
 
-        click.echo(f"[model: {model.__class__.__name__}]")
+        click.echo(self._muted(f"[model: {model.__class__.__name__}]"))
         response_lines: List[str] = []
         try:
             async for line in model.execute(prompt, stream=True):
-                click.echo(line)
+                click.echo(self._color(line, "output"))
                 response_lines.append(line)
         except (LLMUnavailableException, LLMExecutionException) as exc:
-            click.echo(f"Error running model: {exc}")
+            click.echo(self._color(f"Error running model: {exc}", "warning"))
             return
 
         if response_lines:
@@ -314,7 +394,7 @@ Anything else is sent to the configured model for a quick chat."""
     def _print_context_usage(self) -> None:
         """Print current context size and limit if known."""
         if not self.current_task:
-            click.echo("No task selected.")
+            click.echo(self._color("No task selected.", "warning"))
             return
         path = self._session_context_path(self.current_task)
         size_bytes = path.stat().st_size if path.exists() else 0
@@ -322,9 +402,10 @@ Anything else is sent to the configured model for a quick chat."""
         limit = self.context_limit
         if limit:
             percent = min(100, int((approx_tokens / limit) * 100)) if limit else 0
-            click.echo(f"Context: ~{approx_tokens} tokens / {limit} (~{percent}% used)")
+            style = "warning" if percent >= 80 else "primary"
+            click.echo(self._color(f"Context: ~{approx_tokens} tokens / {limit} (~{percent}% used)", style))
         else:
-            click.echo(f"Context: ~{approx_tokens} tokens (limit unknown)")
+            click.echo(self._muted(f"Context: ~{approx_tokens} tokens (limit unknown)"))
 
     async def _refresh_context_limit(self) -> None:
         """Refresh cached context limit from DeepSeek if available."""
@@ -404,7 +485,7 @@ Anything else is sent to the configured model for a quick chat."""
             prefix = ">" if i == index else " "
             line = f"{prefix} {i + 1}) {option}"
             if i == index:
-                line = f"\033[1m{line}\033[0m"
+                line = self._bold(self._color(line, "primary"))
             click.echo(f"\r\033[K{line}")
 
     @staticmethod
@@ -416,8 +497,159 @@ Anything else is sent to the configured model for a quick chat."""
     def _prompt_label(self) -> str:
         """Prompt label showing current task context."""
         if self.current_task:
-            return f"[{self.current_task.id}]> "
-        return "blueprint> "
+            return self._color(f"[{self.current_task.id}]> ", "accent")
+        return self._color("blueprint> ", "accent")
+
+    async def _shutdown(self) -> None:
+        """Cleanup resources on exit."""
+        try:
+            deepseek = getattr(self.router, "deepseek", None)
+            if deepseek:
+                await deepseek.stop_daemon()
+        except Exception:
+            # Best-effort cleanup; ignore errors on exit.
+            pass
+
+    # Context staging for executor
+    def _prepare_run_context(self) -> str:
+        """
+        Prepare supplemental context for the coder model, capped to a budget.
+
+        We use up to 60% of the known context limit (or a conservative default)
+        to leave generation room. Oldest content is dropped first.
+        """
+        path = self._session_context_path(self.current_task) if self.current_task else None
+        if not path or not path.exists():
+            return ""
+
+        raw = path.read_text(encoding="utf-8")
+        limit_tokens = self.context_limit or 4096  # fallback
+        budget_tokens = int(limit_tokens * self.context_budget_ratio)
+        if budget_tokens <= 0:
+            return ""
+
+        # Approximate tokens as bytes/4.
+        bytes_budget = budget_tokens * 4
+        if len(raw) <= bytes_budget:
+            return raw
+
+        trimmed = raw[-bytes_budget:]
+        self._append_conversation("system", f"[context trimmed to fit budget ~{budget_tokens} tokens]")
+        return trimmed
+
+    # Styling helpers
+    @staticmethod
+    def _color(text: str, style: str) -> str:
+        palette = {
+            "primary": "bright_green",
+            "accent": "bright_cyan",
+            "output": "bright_white",
+            "muted": "bright_black",
+            "warning": "bright_yellow",
+        }
+        return click.style(text, fg=palette.get(style, "white"))
+
+    def _muted(self, text: str) -> str:
+        return self._color(text, "muted")
+
+    @staticmethod
+    def _bold(text: str) -> str:
+        return click.style(text, bold=True)
+
+    def _print_header(self) -> None:
+        border = self._color("=" * 60, "muted")
+        title = self._bold(self._color("Blueprint console mode", "primary"))
+        feature = self._color(f"feature: {self.feature.name}", "accent")
+        click.echo(f"{border}\n{title}  [{feature}]\n{border}")
+
+    # File and search helpers
+    async def _cmd_ls(self, arg: str) -> None:
+        """List files in a directory."""
+        target = Path(arg.strip() or ".").expanduser()
+        if not target.exists():
+            click.echo(self._color(f"Path not found: {target}", "warning"))
+            return
+
+        try:
+            entries = sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        except Exception as exc:
+            click.echo(self._color(f"Unable to list {target}: {exc}", "warning"))
+            return
+
+        click.echo(self._bold(self._color(f"Listing {target}:", "primary")))
+        for entry in entries[:200]:
+            label = f"{entry.name}/" if entry.is_dir() else entry.name
+            click.echo(self._muted("  ") + label)
+        if len(entries) > 200:
+            click.echo(self._muted(f"  ... and {len(entries) - 200} more"))
+
+    async def _cmd_read(self, arg: str) -> None:
+        """Read a file into session context."""
+        path_str = arg.strip()
+        if not path_str:
+            click.echo(self._color("Usage: /read <path>", "warning"))
+            return
+
+        path = Path(path_str).expanduser()
+        if not path.exists() or not path.is_file():
+            click.echo(self._color(f"File not found: {path}", "warning"))
+            return
+
+        try:
+            content = path.read_text(encoding="utf-8")
+        except Exception as exc:
+            click.echo(self._color(f"Unable to read file: {exc}", "warning"))
+            return
+
+        max_chars = 20000
+        truncated = len(content) > max_chars
+        content_to_use = content[:max_chars]
+
+        header = f"[file] {path}"
+        if truncated:
+            header += f" (truncated to {max_chars} chars)"
+        self._append_context("system", f"{header}\n{content_to_use}")
+        click.echo(self._color(f"Added to context: {path}", "primary"))
+        if truncated:
+            click.echo(self._muted("File was truncated to fit the context guard."))
+
+    async def _cmd_find(self, arg: str) -> None:
+        """Run ripgrep and print results, also append to context."""
+        if not arg:
+            click.echo(self._color("Usage: /find <pattern> [path]", "warning"))
+            return
+        parts = arg.split(maxsplit=1)
+        pattern = parts[0]
+        target = Path(parts[1]).expanduser() if len(parts) > 1 else Path(".")
+
+        rg_cmd = ["rg", "--no-heading", "--line-number", "--color", "never", pattern, str(target)]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *rg_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            click.echo(self._color("ripgrep (rg) not found. Please install rg.", "warning"))
+            return
+        except Exception as exc:
+            click.echo(self._color(f"Unable to run rg: {exc}", "warning"))
+            return
+
+        stdout, stderr = await proc.communicate()
+        if stderr:
+            click.echo(self._muted(stderr.decode(errors="replace")))
+        if stdout:
+            output = stdout.decode(errors="replace")
+            lines = output.splitlines()
+            for line in lines[:200]:
+                click.echo(self._color(line, "output"))
+            if len(lines) > 200:
+                click.echo(self._muted(f"... and {len(lines) - 200} more lines"))
+            snippet = "\n".join(lines[:200])
+            self._append_context("system", f"[rg] pattern={pattern} path={target}\n{snippet}")
+        else:
+            click.echo(self._muted("No matches found."))
 
 
 async def run_console_chat(feature: str) -> None:

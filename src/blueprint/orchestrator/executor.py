@@ -20,6 +20,7 @@ class TaskExecutor:
         self.feature_dir = feature_dir
         self.logger = Logger(feature_dir)
         self.current_task: Optional[Task] = None
+        self.run_context: Optional[str] = None
 
     async def execute_task(self, task: Task) -> bool:
         """
@@ -65,6 +66,7 @@ class TaskExecutor:
             return False
         finally:
             self.current_task = None
+            self.run_context = None
 
     async def _execute_architecture_task(self, task: Task) -> bool:
         """Execute architecture/design task."""
@@ -91,11 +93,10 @@ Provide detailed architectural guidance, design decisions, and implementation ap
         """Execute boilerplate generation task."""
         gemini = await self.router.route(ModelRole.BOILERPLATE)
 
-        output_lines = []
-        async for line in gemini.generate_boilerplate(task.description):
+        output_text = await gemini.generate_boilerplate(task.description)
+        output_lines = output_text.splitlines()
+        for line in output_lines:
             print(line)
-            output_lines.append(line)
-
         output_file = self.feature_dir / "partial" / f"{task.id}_boilerplate.py"
         output_file.parent.mkdir(parents=True, exist_ok=True)
         output_file.write_text("\n".join(output_lines))
@@ -105,14 +106,20 @@ Provide detailed architectural guidance, design decisions, and implementation ap
     async def _execute_code_task(self, task: Task) -> bool:
         """Execute code generation task."""
         spec_file = self.feature_dir / "spec.md"
-        context = spec_file.read_text(encoding="utf-8") if spec_file.exists() else ""
+        context_parts = []
+        if spec_file.exists():
+            context_parts.append(spec_file.read_text(encoding="utf-8"))
+        if self.run_context:
+            context_parts.append("\n\nSupplemental context:\n")
+            context_parts.append(self.run_context)
+        context = "".join(context_parts)
 
         coder = await self.router.route(ModelRole.CODER, content_size=len(context))
 
-        output_lines = []
-        async for line in coder.generate_code(task.description, context):
+        output_text = await coder.generate_code(task.description, context)
+        output_lines = output_text.splitlines()
+        for line in output_lines:
             print(line)
-            output_lines.append(line)
 
         output_file = self.feature_dir / "partial" / f"{task.id}_code.py"
         output_file.parent.mkdir(parents=True, exist_ok=True)
