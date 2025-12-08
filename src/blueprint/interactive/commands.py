@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Callable, Dict
 
 from ..orchestrator.executor import TaskExecutor
@@ -48,20 +49,29 @@ class CommandHandler:
         }
 
     async def handle(self, command: str) -> None:
-        parts = command.split(maxsplit=1)
-        cmd = parts[0]
-        args = parts[1] if len(parts) > 1 else ""
+        # Check if it's a slash command
+        if command.startswith("/"):
+            parts = command.split(maxsplit=1)
+            cmd = parts[0]
+            args = parts[1] if len(parts) > 1 else ""
 
-        handler = self.commands.get(cmd)
-        if handler:
-            await handler(args)
+            handler = self.commands.get(cmd)
+            if handler:
+                await handler(args)
+            else:
+                self.app.output_panel.write_error(f"Unknown command: {cmd}")
+                self.app.output_panel.write_line("Type /help for available commands")
         else:
-            self.app.output_panel.write_error(f"Unknown command: {cmd}")
-            self.app.output_panel.write_line("Type /help for available commands")
+            # Free-form input - send to ollama
+            await self.chat_with_ollama(command)
 
     async def cmd_help(self, args: str) -> None:
         help_text = """
 [bold]Blueprint Interactive Commands[/bold]
+
+[bold cyan]Free-form Chat:[/bold cyan]
+  Type any text (without /) to chat with the selected ollama model
+  Press Ctrl+M to select a different model
 
 Task Management:
   /tasks          List all tasks
@@ -79,7 +89,7 @@ Execution Control:
   /resume         Resume current task
 
 Configuration:
-  /switch-model   Change local coder model
+  /switch-model   Change local coder model (or use Ctrl+M)
   /usage          Show usage dashboard
   /spec           View specification
   /logs           View logs
@@ -115,7 +125,8 @@ Other:
             self.app.output_panel.write_warning("No task to resume")
 
     async def cmd_switch_model(self, args: str) -> None:
-        self.app.output_panel.write_line("Model switching not implemented yet")
+        # Trigger the model selector
+        self.app.action_select_model()
 
     async def cmd_usage(self, args: str) -> None:
         from .widgets.usage_modal import UsageModal
@@ -202,3 +213,42 @@ Other:
 
     async def cmd_exit(self, args: str) -> None:
         self.app.exit()
+
+    async def chat_with_ollama(self, prompt: str) -> None:
+        """Send free-form prompt to ollama model."""
+        from ..config import Config
+
+        config = Config()
+        model = config.get("local_model", "deepseek-coder:14b")
+
+        self.app.output_panel.write_line(f"[dim]Using model: {model}[/dim]")
+        self.app.output_panel.write_line("")
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "ollama",
+                "run",
+                model,
+                prompt,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            # Stream output line by line
+            if process.stdout:
+                async for line_bytes in process.stdout:
+                    line = line_bytes.decode(errors="replace").rstrip()
+                    if line:
+                        self.app.output_panel.write_line(line)
+
+            await process.wait()
+
+            if process.returncode != 0 and process.stderr:
+                stderr = await process.stderr.read()
+                error_msg = stderr.decode(errors="replace")
+                self.app.output_panel.write_error(f"Ollama error: {error_msg}")
+
+        except FileNotFoundError:
+            self.app.output_panel.write_error("Ollama not found. Please install ollama first.")
+        except Exception as e:
+            self.app.output_panel.write_error(f"Error: {str(e)}")

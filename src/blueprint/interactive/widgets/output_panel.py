@@ -12,13 +12,34 @@ from textual.widgets import RichLog
 class OutputPanel(Widget):
     """Widget for streaming LLM output."""
 
+    DEFAULT_CSS = """
+    OutputPanel RichLog {
+        scrollbar-gutter: stable;
+    }
+
+    OutputPanel RichLog:focus {
+        border: tall $accent;
+    }
+    """
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.border_title = "Output"
 
     def compose(self) -> ComposeResult:
-        log = RichLog(id="output-log", highlight=True, markup=True, auto_scroll=True)
+        log = RichLog(
+            id="output-log",
+            highlight=True,
+            markup=True,
+            auto_scroll=True,
+            wrap=True,
+        )
         yield log
+
+    def on_mount(self) -> None:
+        """Make the log focusable for better interaction."""
+        log = self.query_one("#output-log", RichLog)
+        log.can_focus = True
 
     def write_line(self, text: str, style: str | None = None) -> None:
         log = self.query_one("#output-log", RichLog)

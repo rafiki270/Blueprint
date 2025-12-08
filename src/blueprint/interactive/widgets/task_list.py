@@ -6,15 +6,32 @@ from typing import List, Optional
 
 from rich.text import Text
 from textual.app import ComposeResult
+from textual.containers import Vertical
+from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
-from textual.widgets import Label, ListItem, ListView
+from textual.widgets import Button, Label, ListItem, ListView
 
 from ...state.tasks import Task, TaskStatus
 
 
 class TaskListWidget(Widget):
     """Widget displaying task list with status."""
+
+    DEFAULT_CSS = """
+    TaskListWidget Vertical {
+        height: 100%;
+    }
+
+    TaskListWidget Button {
+        width: 100%;
+        margin: 0 0 1 0;
+    }
+
+    TaskListWidget ListView {
+        height: 1fr;
+    }
+    """
 
     tasks: List[Task] = reactive([], layout=True)
     current_task_id: Optional[str] = reactive(None, layout=True)
@@ -24,7 +41,9 @@ class TaskListWidget(Widget):
         self.border_title = "Tasks"
 
     def compose(self) -> ComposeResult:
-        yield ListView(id="task-list-view")
+        with Vertical():
+            yield Button("+ New Task", variant="success", id="new-task-button")
+            yield ListView(id="task-list-view")
 
     def watch_tasks(self, tasks: List[Task]) -> None:
         list_view = self.query_one("#task-list-view", ListView)
@@ -70,3 +89,12 @@ class TaskListWidget(Widget):
     def update_tasks(self, tasks: List[Task], current_id: Optional[str] = None) -> None:
         self.tasks = tasks
         self.current_task_id = current_id
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button press for new task."""
+        if event.button.id == "new-task-button":
+            self.post_message(self.NewTaskRequested())
+            event.stop()
+
+    class NewTaskRequested(Message):
+        """Message sent when new task button is pressed."""

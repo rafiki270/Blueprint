@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Footer, Input
 
 from .commands import CommandHandler
-from .widgets import ContextPanel, OutputPanel, TaskListWidget, TopBar, UsageModal
+from .widgets import ContextPanel, ModelSelectorModal, NewTaskModal, OutputPanel, TaskListWidget, TopBar, UsageModal
 from ..config import Config
 from ..models.router import ModelRouter
 from ..orchestrator.executor import TaskExecutor
@@ -62,6 +64,8 @@ class BlueprintApp(App):
 
     BINDINGS = [
         Binding("ctrl+p", "command_palette", "Menu"),
+        Binding("ctrl+m", "select_model", "Model"),
+        Binding("ctrl+n", "new_task", "New Task"),
         Binding("ctrl+u", "show_usage", "Usage"),
         Binding("ctrl+s", "stop_task", "Stop Task"),
         Binding("ctrl+c", "exit_or_confirm", "Quit"),
@@ -146,6 +150,69 @@ class BlueprintApp(App):
     async def on_top_bar_menu_toggled(self, event: TopBar.MenuToggled) -> None:
         """Handle menu toggle from TopBar - open command palette."""
         self.action_command_palette()
+
+    def on_task_list_widget_new_task_requested(self, event: TaskListWidget.NewTaskRequested) -> None:
+        """Handle new task button press from TaskListWidget."""
+        self.run_worker(self._show_new_task_modal())
+
+    async def _show_new_task_modal(self) -> None:
+        """Show the new task modal and handle result."""
+        result = await self.push_screen_wait(NewTaskModal())
+        if result:
+            # TODO: Process the brief with Claude to generate a plan
+            self.output_panel.write_line(f"[bold cyan]New Task Brief:[/bold cyan]")
+            self.output_panel.write_line(result)
+            self.output_panel.write_line("")
+            self.output_panel.write_line("[dim]Next step: Process with Claude to generate plan...[/dim]")
+
+    def action_new_task(self) -> None:
+        """Show new task modal."""
+        self.run_worker(self._show_new_task_modal())
+
+    def action_select_model(self) -> None:
+        """Show model selector modal."""
+        self.run_worker(self._show_model_selector())
+
+    async def _list_ollama_models(self) -> list[str]:
+        """List available ollama models."""
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "ollama",
+                "list",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await process.communicate()
+
+            if process.returncode == 0:
+                # Parse ollama list output
+                lines = stdout.decode().strip().split('\n')
+                models = []
+                for line in lines[1:]:  # Skip header
+                    if line.strip():
+                        # First column is model name
+                        parts = line.split()
+                        if parts:
+                            models.append(parts[0])
+                return models
+            else:
+                return []
+        except FileNotFoundError:
+            return []
+        except Exception:
+            return []
+
+    async def _show_model_selector(self) -> None:
+        """Show model selector and save selection."""
+        models = await self._list_ollama_models()
+        current_model = self.config.get("local_model", "deepseek-coder:14b")
+
+        result = await self.push_screen_wait(ModelSelectorModal(models, current_model))
+
+        if result:
+            # Save selected model to config
+            self.config.set("local_model", result)
+            self.output_panel.write_success(f"Model changed to: {result}")
 
     def action_stop_task(self) -> None:
         self.run_worker(self.command_handler.cmd_stop(""))

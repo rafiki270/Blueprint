@@ -8,7 +8,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.message import Message
 from textual.widget import Widget
-from textual.widgets import Input, Static
+from textual.widgets import Button, Input, Static
 
 
 class TopBar(Widget):
@@ -29,9 +29,12 @@ class TopBar(Widget):
     TopBar #menu-button-left,
     TopBar #context-toggle-button {
         width: 3;
-        content-align: center middle;
+        min-width: 3;
+        height: 1;
         background: $primary;
         color: $text;
+        border: none;
+        padding: 0;
     }
 
     TopBar #menu-button-left:hover,
@@ -66,15 +69,9 @@ class TopBar(Widget):
     def compose(self) -> ComposeResult:
         """Compose the top bar layout."""
         with Horizontal():
-            menu_btn = Static("≡", id="menu-button-left")
-            menu_btn.can_focus = False
-            yield menu_btn
-
+            yield Button("≡", id="menu-button-left", variant="primary")
             yield Static(f"Blueprint - Feature: {self.feature_name}", id="title-status")
-
-            context_btn = Static("≡", id="context-toggle-button")
-            context_btn.can_focus = False
-            yield context_btn
+            yield Button("≡", id="context-toggle-button", variant="primary")
 
         yield Input(placeholder="Enter command (type /help for commands)", id="command-input")
 
@@ -107,17 +104,21 @@ class TopBar(Widget):
         event.input.value = ""
         event.input.styles.height = 1
 
-    def on_static_click(self, event) -> None:
-        """Handle clicks on Static buttons."""
-        if event.static.id == "menu-button-left":
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button presses."""
+        if event.button.id == "menu-button-left":
             self.post_message(self.MenuToggled())
             event.stop()
-        elif event.static.id == "context-toggle-button":
+        elif event.button.id == "context-toggle-button":
             self.post_message(self.ContextToggled())
             event.stop()
 
     async def on_key(self, event) -> None:
         """Handle key presses for command history."""
+        # Let app-level bindings (Ctrl+M, Ctrl+P, etc.) pass through
+        if event.key.startswith("ctrl+"):
+            return
+
         input_widget = self.query_one("#command-input", Input)
 
         if event.key == "up":
