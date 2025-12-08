@@ -44,9 +44,10 @@ blueprint --version
 - Keep changes incremental and validated before moving to the next phase.
 
 ## Roadmap
-- Phase 2: LLM wrappers and router
-- Phase 3: Orchestration pipeline
-- Phase 4: Interactive TUI
+- Phase 1: Foundation ✅
+- Phase 2: LLM wrappers and router ✅
+- Phase 3: Orchestration pipeline ✅
+- Phase 4: Interactive TUI ⏳
 - Phase 5: Static mode runner
 - Phase 6: Logging and usage tracking
 - Phase 7: Documentation pass

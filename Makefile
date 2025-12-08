@@ -23,12 +23,12 @@ help:
 
 # Installation targets
 install: python-check
+	$(PYTHON) -m pip install -r requirements.txt
 	$(PYTHON) -m pip install .
-	$(PYTHON) -m pip install click
 
 dev: python-check
+	$(PYTHON) -m pip install -r requirements.txt
 	$(PYTHON) -m pip install -e ".[dev]"
-	$(PYTHON) -m pip install click
 
 # Testing and quality
 test: python-check
