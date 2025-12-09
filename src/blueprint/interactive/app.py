@@ -194,14 +194,16 @@ class BlueprintApp(App):
         self.output_panel.write_line("")
 
         # Load and display conversation history
-        conversation = self.feature.load_task_conversation(task.id)
+        entries = self.feature.load_task_conversation_entries(task.id)
 
-        if conversation:
+        if entries:
             self.output_panel.write_line("[bold]Conversation History:[/bold]")
             self.output_panel.write_line("")
-            # Display conversation with proper formatting
-            for line in conversation.strip().split("\n"):
-                self.output_panel.write_line(line)
+            for entry in entries:
+                ts = entry.get("timestamp", "")
+                role = entry.get("role", "")
+                content = entry.get("content", "")
+                self.output_panel.write_line(f"[dim]{ts}[/dim] {role}: {content}")
         else:
             self.output_panel.write_line("[dim]No conversation history yet for this task.[/dim]")
             self.output_panel.write_line("[dim]Start a task with /start to begin logging conversation.[/dim]")

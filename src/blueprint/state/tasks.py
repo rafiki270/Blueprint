@@ -37,6 +37,8 @@ class Task:
         status: TaskStatus = TaskStatus.PENDING,
         created_at: Optional[str] = None,
         updated_at: Optional[str] = None,
+        dependencies: Optional[list[str]] = None,
+        history: Optional[list[dict]] = None,
     ) -> None:
         self.id = id
         self.title = title
@@ -46,6 +48,8 @@ class Task:
         timestamp = datetime.utcnow().isoformat()
         self.created_at = created_at or timestamp
         self.updated_at = updated_at or timestamp
+        self.dependencies = dependencies or []
+        self.history: list[dict] = history or []
 
     def to_dict(self) -> Dict:
         """Convert to dictionary."""
@@ -57,6 +61,8 @@ class Task:
             "status": self.status.value,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "dependencies": self.dependencies,
+            "history": self.history,
         }
 
     @staticmethod
@@ -70,6 +76,8 @@ class Task:
             status=TaskStatus(data.get("status", TaskStatus.PENDING.value)),
             created_at=data.get("created_at"),
             updated_at=data.get("updated_at"),
+            dependencies=data.get("dependencies") or [],
+            history=data.get("history") or [],
         )
 
 
@@ -119,10 +127,10 @@ class TaskManager:
         next_num = max(existing_numbers, default=0) + 1
         return f"task-{next_num}"
 
-    def create(self, title: str, description: str, type: TaskType) -> Task:
+    def create(self, title: str, description: str, type: TaskType, dependencies: Optional[list[str]] = None) -> Task:
         """Create a new task."""
         task_id = self._next_id()
-        task = Task(id=task_id, title=title, description=description, type=type)
+        task = Task(id=task_id, title=title, description=description, type=type, dependencies=dependencies or [])
         self.tasks.append(task)
         self.save()
         return task
@@ -146,6 +154,7 @@ class TaskManager:
             return False
         task.status = status
         task.updated_at = datetime.utcnow().isoformat()
+        self._record_history(task, f"status:{status.value}")
         self.save()
         return True
 
@@ -171,14 +180,26 @@ class TaskManager:
 
     def get_next(self) -> Optional[Task]:
         """Get next incomplete task."""
-        for task in self.tasks:
-            if task.status not in (TaskStatus.COMPLETED, TaskStatus.SKIPPED):
-                return task
-        return None
+        ready = self.get_ready_tasks()
+        return ready[0] if ready else None
 
     def get_missing(self) -> List[Task]:
         """Get all incomplete tasks."""
         return [task for task in self.tasks if task.status not in (TaskStatus.COMPLETED, TaskStatus.SKIPPED)]
+
+    def get_ready_tasks(self) -> List[Task]:
+        """Return tasks whose dependencies are completed."""
+        completed = {t.id for t in self.tasks if t.status == TaskStatus.COMPLETED}
+        return [
+            t
+            for t in self.tasks
+            if t.status not in (TaskStatus.COMPLETED, TaskStatus.SKIPPED)
+            and all(dep in completed for dep in t.dependencies)
+        ]
+
+    def _record_history(self, task: Task, event: str) -> None:
+        """Append a history entry for auditing."""
+        task.history.append({"timestamp": datetime.utcnow().isoformat(), "event": event})
 
     def list_all(self) -> List[Task]:
         """List all tasks."""

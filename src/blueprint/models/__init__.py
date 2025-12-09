@@ -2,7 +2,6 @@
 
 from .base import (
     BaseAdapter,
-    BaseLLM,
     ChatMessage,
     ChatRequest,
     ChatResponse,
@@ -27,16 +26,8 @@ from .streaming import StreamHandler
 from .tool_engine import ToolEngine
 from .router import ModelRole, ModelRouter
 
-# Backwards-compatible aliases for previous naming.
-ClaudeCLI = ClaudeAdapter
-GeminiCLI = GeminiAdapter
-DeepSeekCLI = OllamaAdapter
-CodexCLI = OpenAIAdapter
-BaseLLM = BaseAdapter
-
 __all__ = [
     "BaseAdapter",
-    "BaseLLM",
     "ChatMessage",
     "ChatRequest",
     "ChatResponse",
@@ -63,10 +54,4 @@ __all__ = [
     "ModelRouter",
     "ModelRole",
     "CredentialsManager",
-    # Legacy exports
-    "ClaudeCLI",
-    "GeminiCLI",
-    "DeepSeekCLI",
-    "CodexCLI",
-    "BaseLLM",
 ]

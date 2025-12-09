@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Iterable, List, Optional, Union
+
+try:
+    import readline  # type: ignore
+except ImportError:  # pragma: no cover - platform dependent
+    readline = None
 
 import click
 
 from .config import Config
-from .models.base import LLMExecutionException, LLMUnavailableException
+from .models.base import ChatMessage, LLMExecutionException, LLMUnavailableException
 from .models.router import ModelRole, ModelRouter
-from .models.deepseek import DeepSeekCLI
+from .interactive.prompt_history import PromptHistory
 from .orchestrator.executor import TaskExecutor
+from .orchestrator.orchestrator import LLMOrchestrator
 from .orchestrator.supervisor import Supervisor
 from .state.feature import Feature
 from .state.tasks import Task, TaskManager, TaskStatus, TaskType
@@ -39,10 +46,15 @@ class ConsoleChat:
         self.router = ModelRouter(self.config)
         self.executor = TaskExecutor(self.task_manager, self.router, self.feature.base_dir)
         self.supervisor = Supervisor(self.router, self.feature.base_dir)
+        self.orchestrator = LLMOrchestrator(self.config)
+        self.orchestrator.feature_dir = self.feature.base_dir
 
         self.current_task: Optional[Task] = None
         self.context_limit: Optional[int] = None
         self.context_budget_ratio: float = 0.6  # use up to 60% of coder context
+        self.current_backend: Optional[str] = None
+        self._history_loaded_for: Optional[str] = None
+        self._prompt_history: Optional[PromptHistory] = None
 
     async def run(self) -> None:
         """Start the console chat session."""
@@ -84,8 +96,10 @@ class ConsoleChat:
         """Main chat loop."""
         click.echo("\n" + self._bold(self._color("Type /help for commands. Press Ctrl+C to exit.", "primary")))
         while True:
+            self._ensure_history_ready()
             try:
-                prompt = input(self._prompt_label())
+                click.echo(self._prompt_label(), nl=False)
+                prompt = input()
             except (KeyboardInterrupt, EOFError):
                 click.echo("\nExiting Blueprint.")
                 return
@@ -173,11 +187,42 @@ class ConsoleChat:
 
         if cmd == "/clear":
             self._clear_session_context()
+            self._clear_prompt_history()
             click.echo(self._color("Session context cleared.", "primary"))
             return True
 
         if cmd in ("/context", "/ctx"):
             self._print_context_usage()
+            return True
+
+        if cmd == "/stats":
+            stats = self.orchestrator.get_usage_stats()
+            click.echo("Usage:")
+            if stats:
+                click.echo("\n".join(f"- {k}: {v}" for k, v in stats.items()))
+            else:
+                click.echo("- no usage recorded yet")
+            router_stats = self.router.get_routing_stats()
+            click.echo("\nRouting health:")
+            for provider, status in router_stats.get("models", {}).items():
+                click.echo(f"- {provider}: {status}")
+            return True
+
+        if cmd == "/mode":
+            click.echo(f"Tool mode: {self.orchestrator.get_tool_mode()}")
+            return True
+
+        if cmd.startswith("/persona"):
+            if arg:
+                try:
+                    persona = self.orchestrator.set_persona(arg.strip())
+                    click.echo(f"Active persona set to '{persona.name}'")
+                except KeyError:
+                    click.echo(f"Unknown persona '{arg.strip()}'.")
+            else:
+                names = ", ".join(self.orchestrator.personas.list_names())
+                click.echo(f"Personas: {names}")
+                click.echo(f"Current: {self.orchestrator.get_active_persona().name}")
             return True
 
         if cmd == "/ls":
@@ -334,71 +379,87 @@ class ConsoleChat:
     async def _chat_with_model(self, prompt: str) -> None:
         """Send free-form prompt to routed model and stream output."""
         self._append_conversation("user", prompt)
-        self._append_context("user", prompt)
 
         try:
-            model = await self.router.route(ModelRole.CODER)
+            adapter = await self.router.route(ModelRole.CODER)
         except LLMUnavailableException as exc:
             click.echo(self._color(f"Model unavailable: {exc}", "warning"))
             return
 
-        click.echo(self._muted(f"[model: {model.__class__.__name__}]"))
-        response_lines: List[str] = []
+        backend = adapter.provider.value
+        self.current_backend = backend
+        model_name = getattr(adapter, "default_model", adapter.__class__.__name__)
+        click.echo(self._muted(f"[model: {model_name}]"))
+
         try:
-            async for line in model.execute(prompt, stream=True):
-                click.echo(self._color(line, "output"))
-                response_lines.append(line)
+            response = await self.orchestrator.chat(
+                prompt,
+                backend=backend,
+                include_context=True,
+            )
         except (LLMUnavailableException, LLMExecutionException) as exc:
             click.echo(self._color(f"Error running model: {exc}", "warning"))
             return
 
-        if response_lines:
-            self._append_conversation("assistant", "\n".join(response_lines))
-        self._append_context("assistant", "\n".join(response_lines))
+        click.echo(self._color(response.content, "output"))
+        self._append_conversation("assistant", response.content)
+        self._append_context("assistant", response.content, backend)
 
     def _append_conversation(self, role: str, text: str) -> None:
         """Persist conversation to the current task log."""
         if self.current_task:
             self.feature.append_task_conversation(self.current_task.id, role, text)
+        if role == "user":
+            self._append_prompt_history(text)
 
-    def _append_context(self, role: str, text: str) -> None:
+    def _append_context(self, role: str, text: str, backend: Optional[str]) -> None:
         """Append to session context for the current task."""
         if not self.current_task:
             return
-        path = self._session_context_path(self.current_task)
-        entry = f"{role}: {text}\n"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fp:
-            fp.write(entry)
+        backend_key = backend or self.current_backend or "global"
+        self.orchestrator.context_manager.add_message(
+            backend_key, ChatMessage(role=role, content=text)
+        )
 
     def _clear_session_context(self) -> None:
         """Clear the current session context file."""
+        self.orchestrator.context_manager.clear_all()
         if self.current_task:
-            path = self._session_context_path(self.current_task)
-            if path.exists():
-                path.unlink()
+            self.feature.clear_task_conversation(self.current_task.id)
 
     def _reset_session_context(self, task: Task) -> None:
         """Reset session context when entering a task."""
-        path = self._session_context_path(task)
-        if path.exists():
-            path.unlink()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch()
+        self.orchestrator.context_manager.clear_all()
+        self.feature.clear_task_conversation(task.id)
+        self._clear_prompt_history()
+        self._prime_context_from_history(task)
         asyncio.create_task(self._refresh_context_limit())
+        self._refresh_prompt_history_state()
 
-    def _session_context_path(self, task: Task):
-        """Path to the session context file for a task."""
-        return task and self.feature.task_dir(task.id) / "session.context"
+    def _prime_context_from_history(self, task: Task) -> None:
+        """Load persisted conversation history into the orchestrator context."""
+        entries = self.feature.load_task_conversation_entries(task.id)
+        if not entries:
+            return
+
+        backend_key = self.current_backend or "global"
+        for entry in entries[-50:]:  # cap to recent history
+            role = entry.get("role")
+            content = entry.get("content")
+            if role and content:
+                self.orchestrator.context_manager.add_message(
+                    backend_key,
+                    ChatMessage(role=role, content=content),
+                )
 
     def _print_context_usage(self) -> None:
         """Print current context size and limit if known."""
         if not self.current_task:
             click.echo(self._color("No task selected.", "warning"))
             return
-        path = self._session_context_path(self.current_task)
-        size_bytes = path.stat().st_size if path.exists() else 0
-        approx_tokens = max(1, size_bytes // 4) if size_bytes else 0
+        backend_key = self.current_backend or "global"
+        stats = self.orchestrator.context_manager.stats(backend_key)
+        approx_tokens = stats["estimated_tokens"]
         limit = self.context_limit
         if limit:
             percent = min(100, int((approx_tokens / limit) * 100)) if limit else 0
@@ -407,14 +468,71 @@ class ConsoleChat:
         else:
             click.echo(self._muted(f"Context: ~{approx_tokens} tokens (limit unknown)"))
 
-    async def _refresh_context_limit(self) -> None:
-        """Refresh cached context limit from DeepSeek if available."""
+    # Prompt history helpers
+    def _history_path(self, task: Task) -> Path:
+        """Per-task prompt history path."""
+        return self.feature.task_dir(task.id) / "prompt-history.json"
+
+    def _ensure_history_ready(self) -> None:
+        """Load history into readline for the active task."""
+        if readline is None or not self.current_task:
+            return
+        if self._history_loaded_for == self.current_task.id:
+            return
+        self._load_prompt_history()
+
+    def _load_prompt_history(self) -> None:
+        """Load stored prompts into readline."""
+        if readline is None or not self.current_task:
+            return
+        self._prompt_history = PromptHistory(self._history_path(self.current_task))
+        prompts = self._prompt_history.load()
+        readline.clear_history()
+        for prompt in prompts:
+            readline.add_history(prompt)
+        self._history_loaded_for = self.current_task.id
+
+    def _append_prompt_history(self, prompt: str) -> None:
+        """Append prompt to history file and readline."""
+        if readline is None or not self.current_task:
+            return
+        if not self._prompt_history:
+            self._prompt_history = PromptHistory(self._history_path(self.current_task))
+        # Persist without reloading full history into readline to avoid corruption.
+        self._prompt_history.append(prompt)
         try:
-            model = await self.router.route(ModelRole.CODER)
-            if isinstance(model, DeepSeekCLI):
-                limit = await model.get_context_limit()
-                if limit:
-                    self.context_limit = limit
+            readline.add_history(prompt)
+        except Exception:
+            pass
+
+    def _clear_prompt_history(self) -> None:
+        """Remove stored history for the current task."""
+        if readline is not None:
+            try:
+                readline.clear_history()
+            except Exception:
+                pass
+        if not self.current_task:
+            return
+        if self._prompt_history is None:
+            self._prompt_history = PromptHistory(self._history_path(self.current_task))
+        self._prompt_history.clear()
+        self._history_loaded_for = None
+
+    def _refresh_prompt_history_state(self) -> None:
+        """Ensure readline history is reloaded for the current task."""
+        if readline is None or not self.current_task:
+            return
+        self._history_loaded_for = None
+        self._load_prompt_history()
+
+    async def _refresh_context_limit(self) -> None:
+        """Refresh cached context limit from the active coder backend if it exposes one."""
+        try:
+            adapter = await self.router.route(ModelRole.CODER)
+            limit = await adapter.get_context_limit()
+            if limit:
+                self.context_limit = limit
         except Exception:
             return
 

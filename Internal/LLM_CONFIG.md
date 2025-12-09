@@ -1506,3 +1506,12 @@ This design provides:
 ✅ **Extensible architecture** for future enhancements (profiles, project overrides, usage tracking)  
 
 **Next steps**: Implement in phases (see 8.3), starting with core config management and API clients, then building the TUI layer with `prompt_toolkit`.
+
+## Implementation Checklist
+- [ ] Config manager with encrypted storage, atomic writes, and schema versioning
+- [ ] Non-interactive CLI commands (`config show/set/reset/validate`) wired to config manager
+- [ ] Interactive TUI main menu + backend detail views with model picker and connection tests
+- [ ] First-run onboarding/wizard to collect API keys for OpenAI, Claude, Gemini and verify local Ollama reachability; re-runnable from inside the config UI
+- [ ] In-app editing/rotation of credentials and endpoints after onboarding (keyboard-driven, masked inputs)
+- [ ] Validation and helpful error states for bad keys, endpoints, and missing models
+- [ ] Tests covering load/save/encrypt flows, onboarding paths, CLI commands, and UI validation hooks

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -93,27 +95,96 @@ class Feature:
 
     def task_conversation_path(self, task_id: str) -> Path:
         """Conversation history path for a specific task."""
-        return self.task_dir(task_id) / "conversation.log"
+        return self.task_dir(task_id) / "session-context.json"
 
     def append_task_conversation(self, task_id: str, role: str, message: str) -> None:
-        """Append a message to the task's conversation history."""
+        """Append a message to the task's conversation history (JSONL)."""
         dir_path = self.task_dir(task_id)
         Persistence.ensure_dir(dir_path)
         conv_path = self.task_conversation_path(task_id)
 
-        from datetime import datetime
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        entry = f"[{timestamp}] {role}: {message}\n\n"
+        # Maintain compatibility if existing file is newline-delimited JSON
+        entries = self.load_task_conversation_entries(task_id)
+        entries.append(
+            {
+                "timestamp": datetime.utcnow().isoformat(),
+                "role": role,
+                "content": message,
+            }
+        )
+        Persistence.save_json(conv_path, {"entries": entries})
 
-        with conv_path.open("a", encoding="utf-8") as f:
-            f.write(entry)
+    def clear_task_conversation(self, task_id: str) -> None:
+        """Clear persisted conversation for a task."""
+        dir_path = self.task_dir(task_id)
+        Persistence.ensure_dir(dir_path)
+        conv_path = self.task_conversation_path(task_id)
+        Persistence.save_json(conv_path, {"entries": []})
 
-    def load_task_conversation(self, task_id: str) -> Optional[str]:
-        """Load the full conversation history for a task."""
+    def load_task_conversation_entries(self, task_id: str) -> List[Dict[str, str]]:
+        """Load conversation as structured entries."""
         conv_path = self.task_conversation_path(task_id)
         if not conv_path.exists():
+            return []
+
+        entries: List[Dict[str, str]] = []
+        data = Persistence.load_json(conv_path)
+        if data and "entries" in data and isinstance(data["entries"], list):
+            for item in data["entries"]:
+                if isinstance(item, dict) and "role" in item and "content" in item:
+                    entries.append(
+                        {
+                            "timestamp": str(item.get("timestamp", "")),
+                            "role": str(item.get("role")),
+                            "content": str(item.get("content")),
+                        }
+                        )
+            return entries
+
+        # Legacy fallback: newline-delimited JSON
+        if conv_path.exists():
+            try:
+                raw = conv_path.read_text(encoding="utf-8")
+                for line in raw.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                        if isinstance(data, dict) and "role" in data and "content" in data:
+                            entries.append(
+                                {
+                                    "timestamp": data.get("timestamp", ""),
+                                    "role": str(data.get("role")),
+                                    "content": str(data.get("content")),
+                                }
+                            )
+                            continue
+                    except json.JSONDecodeError:
+                        # Legacy format: [timestamp] role: content
+                        if line.startswith("[") and "]" in line and ":" in line:
+                            ts_part = line[1 : line.find("]")]
+                            remainder = line[line.find("]") + 1 :].strip()
+                            if ":" in remainder:
+                                role_part, content_part = remainder.split(":", 1)
+                                entries.append(
+                                    {
+                                        "timestamp": ts_part.strip(),
+                                        "role": role_part.strip(),
+                                        "content": content_part.strip(),
+                                    }
+                                )
+            except Exception:
+                return []
+        return entries
+
+    def load_task_conversation(self, task_id: str) -> Optional[str]:
+        """Load the full conversation history as formatted text."""
+        entries = self.load_task_conversation_entries(task_id)
+        if not entries:
             return None
-        return conv_path.read_text(encoding="utf-8")
+        lines = [f"[{e.get('timestamp')}] {e.get('role')}: {e.get('content')}" for e in entries]
+        return "\n".join(lines)
 
     @staticmethod
     def list_features() -> List[str]:

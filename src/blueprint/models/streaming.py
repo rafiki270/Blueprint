@@ -21,6 +21,7 @@ class StreamHandler:
         request: ChatRequest,
         adapter: BaseAdapter,
         fallback_adapters: Sequence[BaseAdapter] | None = None,
+        expect_json: bool = False,
     ) -> AsyncGenerator[StreamChunk, None]:
         """Yield normalized chunks; retry or fallback on failure."""
         attempts = 0
@@ -31,11 +32,19 @@ class StreamHandler:
         for current_adapter in adapters:
             while attempts <= self.max_retries:
                 try:
+                    collected: List[str] = []
                     async for chunk in current_adapter.stream_chat(request):
                         # Basic structural validation
                         if chunk.error:
                             raise chunk.error
+                        if chunk.delta:
+                            collected.append(chunk.delta)
                         yield chunk
+                    # Post-stream validation
+                    if not collected:
+                        raise LLMExecutionException("Stream produced no content")
+                    if expect_json:
+                        self._validate_json("".join(collected))
                     return
                 except Exception as exc:
                     attempts += 1
@@ -58,3 +67,12 @@ class StreamHandler:
             model=request.model,
             error=LLMExecutionException("Streaming failed after retries/fallbacks"),
         )
+
+    def _validate_json(self, payload: str) -> None:
+        """Basic JSON validation for streams expected to return structured output."""
+        import json
+
+        try:
+            json.loads(payload)
+        except json.JSONDecodeError as exc:  # pragma: no cover - lightweight guard
+            raise LLMExecutionException(f"Invalid JSON output: {exc}") from exc

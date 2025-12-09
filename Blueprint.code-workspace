@@ -1,0 +1,11 @@
+{
+    "folders": [
+        {
+            "path": "/System/Volumes/Data/.internal/projects/Projects/Blueprint"
+        },
+        {
+            "path": "~/Projects" // optional — keeps your symlinked view too
+        }
+    ],
+    "settings": {}
+}

@@ -21,6 +21,12 @@ class Config:
             "ollama": "ollama",
             "codex": "codex",
         },
+        "context_max_messages": 50,
+        "context_summarize_threshold": 40,
+        "context_distill_trigger_tokens": 50000,
+        "context_distill_target_tokens": 8000,
+        "quota_max_cost": None,
+        "quota_max_tokens_per_request": None,
     }
 
     def __init__(self) -> None:

@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Dict, Iterable, List, MutableMapping, Optional
 
 
+class QuotaExceededError(Exception):
+    """Raised when a quota threshold is exceeded."""
+
+
 @dataclass
 class UsageRecord:
     provider: str
@@ -25,11 +29,19 @@ class UsageRecord:
 class UsageTracker:
     """Tracks usage metrics across sessions and tasks."""
 
-    def __init__(self, feature_dir: Path | None = None, pricing: Optional[MutableMapping[str, MutableMapping[str, float]]] = None) -> None:
+    def __init__(
+        self,
+        feature_dir: Path | None = None,
+        pricing: Optional[MutableMapping[str, MutableMapping[str, float]]] = None,
+        max_cost: Optional[float] = None,
+        max_tokens_per_request: Optional[int] = None,
+    ) -> None:
         self.feature_dir = feature_dir
         self.records: List[UsageRecord] = []
         # pricing map: provider -> model -> {"input": rate_per_1k, "output": rate_per_1k}
         self.pricing: MutableMapping[str, MutableMapping[str, float]] = pricing or {}
+        self.max_cost = max_cost
+        self.max_tokens_per_request = max_tokens_per_request
 
     def record_usage(self, provider: str, model: str, usage: Optional[MutableMapping[str, float] | object]) -> None:
         """Store a usage record; cost is estimated if pricing is available."""
@@ -37,6 +49,11 @@ class UsageTracker:
         completion_tokens = self._read_field(usage, "completion_tokens")
         total_tokens = self._read_field(usage, "total_tokens") or prompt_tokens + completion_tokens
         estimated_cost = self._estimate_cost(provider, model, prompt_tokens, completion_tokens)
+
+        if self.max_tokens_per_request and total_tokens > self.max_tokens_per_request:
+            raise QuotaExceededError(
+                f"Request exceeded max tokens: {total_tokens} > {self.max_tokens_per_request}"
+            )
 
         record = UsageRecord(
             provider=provider,
@@ -48,6 +65,11 @@ class UsageTracker:
             success=usage is not None,
         )
         self.records.append(record)
+
+        if self.max_cost is not None and self.get_stats().get("cost", 0.0) > self.max_cost:
+            raise QuotaExceededError(
+                f"Total cost exceeded limit: ${self.get_stats()['cost']:.2f} / ${self.max_cost:.2f}"
+            )
 
     def get_stats(self, provider: Optional[str] = None, model: Optional[str] = None) -> Dict[str, float]:
         """Return aggregated stats filtered by provider/model."""
@@ -70,6 +92,11 @@ class UsageTracker:
     def reset(self) -> None:
         """Clear recorded usage."""
         self.records.clear()
+
+    def set_limits(self, *, max_cost: Optional[float] = None, max_tokens_per_request: Optional[int] = None) -> None:
+        """Configure quota limits."""
+        self.max_cost = max_cost
+        self.max_tokens_per_request = max_tokens_per_request
 
     def set_pricing(self, provider: str, model: str, input_per_1k: float, output_per_1k: Optional[float] = None) -> None:
         """Configure pricing for cost estimation."""
@@ -122,3 +149,14 @@ class UsageTracker:
         if isinstance(usage, dict):
             return int(usage.get(field) or 0)
         return int(getattr(usage, field, 0) or 0)
+
+    def check_request_budget(self, estimated_tokens: int, estimated_cost: Optional[float] = None) -> None:
+        """Validate a request against configured quotas."""
+        if self.max_tokens_per_request and estimated_tokens > self.max_tokens_per_request:
+            raise QuotaExceededError(
+                f"Estimated tokens {estimated_tokens} exceed limit {self.max_tokens_per_request}"
+            )
+        if self.max_cost is not None and estimated_cost is not None and estimated_cost > self.max_cost:
+            raise QuotaExceededError(
+                f"Estimated cost ${estimated_cost:.2f} would exceed limit ${self.max_cost:.2f}"
+            )
