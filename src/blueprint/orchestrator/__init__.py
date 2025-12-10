@@ -3,9 +3,11 @@
 from .context import ContextManager
 from .orchestrator import LLMOrchestrator
 from .persona import Persona, PersonaManager
+from .streaming import StreamCoordinator
 from .pipeline import Pipeline
 from .executor import TaskExecutor
 from .supervisor import Supervisor
+from .task import Task, TaskCoordinator, TaskResult, TaskStatus, TaskStep
 
 __all__ = [
     "ContextManager",
@@ -15,4 +17,10 @@ __all__ = [
     "Pipeline",
     "TaskExecutor",
     "Supervisor",
+    "StreamCoordinator",
+    "Task",
+    "TaskCoordinator",
+    "TaskResult",
+    "TaskStatus",
+    "TaskStep",
 ]

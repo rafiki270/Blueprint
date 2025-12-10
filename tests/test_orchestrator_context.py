@@ -38,7 +38,7 @@ def test_chat_includes_context_and_persona(monkeypatch):
     monkeypatch.setattr(orchestrator.client, "chat", fake_chat)
 
     # Seed prior context
-    orchestrator.context_manager.add_message("openai", ChatMessage(role="user", content="previous turn"))
+    orchestrator.context_manager.add_message(ChatMessage(role="user", content="previous turn"), "openai")
 
     response = asyncio.run(
         orchestrator.chat("current turn", backend="openai", include_context=True)
@@ -55,7 +55,7 @@ def test_chat_includes_context_and_persona(monkeypatch):
     assert any(m.content == "current turn" for m in req.messages)
 
     # Global context is merged when backend-specific key used
-    orchestrator.context_manager.add_message("global", ChatMessage(role="user", content="global note"))
+    orchestrator.context_manager.add_message(ChatMessage(role="user", content="global note"), "global")
     ctx = orchestrator.context_manager.get_context("openai")
     assert any(m.content == "global note" for m in ctx)
 
@@ -82,7 +82,7 @@ def test_chat_without_context(monkeypatch):
 
     monkeypatch.setattr(orchestrator.client, "chat", fake_chat)
 
-    orchestrator.context_manager.add_message("openai", ChatMessage(role="user", content="old"))
+    orchestrator.context_manager.add_message(ChatMessage(role="user", content="old"), "openai")
 
     asyncio.run(
         orchestrator.chat("fresh", backend="openai", include_context=False)

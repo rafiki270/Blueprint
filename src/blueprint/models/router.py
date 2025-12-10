@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Dict, Optional
 
-from ..config import Config
+from ..config import ConfigLoader
 from .base import BaseAdapter, Provider
 from .claude import ClaudeAdapter
 from .codex import OpenAIAdapter
@@ -25,16 +25,28 @@ class ModelRole(Enum):
 class ModelRouter:
     """Route tasks to the most suitable provider."""
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: ConfigLoader) -> None:
         self.config = config
-        creds = CredentialsManager()
+        creds = CredentialsManager(config)
 
-        self.claude = ClaudeAdapter(credentials=creds, default_model=config.get("claude_model", "claude-3-5-sonnet-20241022"))
-        self.gemini = GeminiAdapter(credentials=creds, default_model=config.get("gemini_model", "gemini-2.0-flash"))
-        self.ollama = OllamaAdapter(credentials=creds, default_model=config.get("local_model", "deepseek-coder:latest"))
-        self.openai = OpenAIAdapter(credentials=creds, default_model=config.get("openai_model", "gpt-4o"))
+        self.claude = ClaudeAdapter(
+            credentials=creds,
+            default_model=config.get("backends.claude.model", "claude-sonnet-4.5-20250929"),
+        )
+        self.gemini = GeminiAdapter(
+            credentials=creds,
+            default_model=config.get("backends.gemini.model", "gemini-2-flash"),
+        )
+        self.ollama = OllamaAdapter(
+            credentials=creds,
+            default_model=config.get("backends.ollama.model", "deepseek-coder:latest"),
+        )
+        self.openai = OpenAIAdapter(
+            credentials=creds,
+            default_model=config.get("backends.openai.model", "gpt-4o"),
+        )
 
-        self.max_chars_local = config.get("max_chars_local_model", 20000)
+        self.max_chars_local = config.get("backends.ollama.max_context_tokens", 20000)
         self._health_cache: Dict[Provider, str] = {}
 
     async def check_availability(self) -> None:

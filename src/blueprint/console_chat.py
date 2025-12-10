@@ -418,7 +418,7 @@ class ConsoleChat:
             return
         backend_key = backend or self.current_backend or "global"
         self.orchestrator.context_manager.add_message(
-            backend_key, ChatMessage(role=role, content=text)
+            ChatMessage(role=role, content=text), backend_key
         )
 
     def _clear_session_context(self) -> None:
@@ -448,8 +448,8 @@ class ConsoleChat:
             content = entry.get("content")
             if role and content:
                 self.orchestrator.context_manager.add_message(
-                    backend_key,
                     ChatMessage(role=role, content=content),
+                    backend_key,
                 )
 
     def _print_context_usage(self) -> None:

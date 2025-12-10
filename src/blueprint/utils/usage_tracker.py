@@ -1,10 +1,10 @@
-"""Usage tracking utilities for LLM calls."""
+"""Usage tracking utilities for LLM calls with quota enforcement."""
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, List, MutableMapping, Optional
 
@@ -26,6 +26,24 @@ class UsageRecord:
     timestamp: datetime = field(default_factory=datetime.utcnow)
 
 
+@dataclass
+class UsageStats:
+    total_requests: int = 0
+    total_tokens: int = 0
+    total_cost: float = 0.0
+    by_backend: Dict[str, dict] = field(default_factory=dict)
+
+    def add(self, backend: str, usage: UsageRecord) -> None:
+        self.total_requests += 1
+        self.total_tokens += usage.total_tokens
+        self.total_cost += usage.cost
+        if backend not in self.by_backend:
+            self.by_backend[backend] = {"requests": 0, "tokens": 0, "cost": 0.0}
+        self.by_backend[backend]["requests"] += 1
+        self.by_backend[backend]["tokens"] += usage.total_tokens
+        self.by_backend[backend]["cost"] += usage.cost
+
+
 class UsageTracker:
     """Tracks usage metrics across sessions and tasks."""
 
@@ -35,13 +53,21 @@ class UsageTracker:
         pricing: Optional[MutableMapping[str, MutableMapping[str, float]]] = None,
         max_cost: Optional[float] = None,
         max_tokens_per_request: Optional[int] = None,
+        max_cost_hourly: Optional[float] = None,
+        max_cost_daily: Optional[float] = None,
     ) -> None:
         self.feature_dir = feature_dir
         self.records: List[UsageRecord] = []
-        # pricing map: provider -> model -> {"input": rate_per_1k, "output": rate_per_1k}
+        # pricing map: provider -> model -> (input_rate_per_1k, output_rate_per_1k)
         self.pricing: MutableMapping[str, MutableMapping[str, float]] = pricing or {}
         self.max_cost = max_cost
         self.max_tokens_per_request = max_tokens_per_request
+        self.max_cost_hourly = max_cost_hourly
+        self.max_cost_daily = max_cost_daily
+
+        self.stats = UsageStats()
+        self.hourly_stats: deque[tuple[datetime, UsageRecord]] = deque()
+        self.daily_stats: deque[tuple[datetime, UsageRecord]] = deque()
 
     def record_usage(self, provider: str, model: str, usage: Optional[MutableMapping[str, float] | object]) -> None:
         """Store a usage record; cost is estimated if pricing is available."""
@@ -65,6 +91,12 @@ class UsageTracker:
             success=usage is not None,
         )
         self.records.append(record)
+        self.stats.add(provider, record)
+
+        now = datetime.now()
+        self.hourly_stats.append((now, record))
+        self.daily_stats.append((now, record))
+        self._cleanup_windows()
 
         if self.max_cost is not None and self.get_stats().get("cost", 0.0) > self.max_cost:
             raise QuotaExceededError(
@@ -89,9 +121,31 @@ class UsageTracker:
                 stats["errors"] += 1
         return dict(stats)
 
+    def get_aggregate_usage(self) -> UsageStats:
+        """Return aggregate usage snapshot."""
+        return self.stats
+
+    def check_quotas(self, backend: str) -> None:
+        """Check hourly/daily quotas."""
+        if self.max_cost_hourly is not None:
+            hourly_cost = self._get_cost_in_window(self.hourly_stats)
+            if hourly_cost >= self.max_cost_hourly:
+                raise QuotaExceededError(
+                    f"Hourly quota exceeded: ${hourly_cost:.2f} / ${self.max_cost_hourly:.2f}"
+                )
+        if self.max_cost_daily is not None:
+            daily_cost = self._get_cost_in_window(self.daily_stats)
+            if daily_cost >= self.max_cost_daily:
+                raise QuotaExceededError(
+                    f"Daily quota exceeded: ${daily_cost:.2f} / ${self.max_cost_daily:.2f}"
+                )
+
     def reset(self) -> None:
         """Clear recorded usage."""
         self.records.clear()
+        self.stats = UsageStats()
+        self.hourly_stats.clear()
+        self.daily_stats.clear()
 
     def set_limits(self, *, max_cost: Optional[float] = None, max_tokens_per_request: Optional[int] = None) -> None:
         """Configure quota limits."""
@@ -102,7 +156,6 @@ class UsageTracker:
         """Configure pricing for cost estimation."""
         if provider not in self.pricing:
             self.pricing[provider] = {}
-        # store blended rate; if output not provided, use input rate
         self.pricing[provider][model] = (input_per_1k, output_per_1k if output_per_1k is not None else input_per_1k)
 
     # --- Legacy helpers used by UI ---
@@ -118,7 +171,6 @@ class UsageTracker:
         }
 
     def get_7day_trend(self) -> Dict[str, Dict]:
-        # This implementation is lightweight: it uses aggregate counts without bucketing by day.
         stats = self.get_stats()
         total_calls = int(stats.get("requests", 0))
         return {
@@ -160,3 +212,15 @@ class UsageTracker:
             raise QuotaExceededError(
                 f"Estimated cost ${estimated_cost:.2f} would exceed limit ${self.max_cost:.2f}"
             )
+
+    def _cleanup_windows(self) -> None:
+        now = datetime.now()
+        hour_ago = now - timedelta(hours=1)
+        day_ago = now - timedelta(days=1)
+        while self.hourly_stats and self.hourly_stats[0][0] < hour_ago:
+            self.hourly_stats.popleft()
+        while self.daily_stats and self.daily_stats[0][0] < day_ago:
+            self.daily_stats.popleft()
+
+    def _get_cost_in_window(self, window: deque[tuple[datetime, UsageRecord]]) -> float:
+        return sum(rec.cost for _, rec in window)

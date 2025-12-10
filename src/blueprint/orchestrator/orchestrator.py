@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import AsyncGenerator, Iterable, List, MutableMapping, Optional, Sequence
 
-from ..config import Config
+from ..config import ConfigLoader
 from ..models.base import (
     ChatMessage,
     ChatRequest,
@@ -20,6 +21,8 @@ from ..models.tool_engine import ToolHandler
 from ..utils.usage_tracker import QuotaExceededError, UsageTracker
 from .context import ContextManager
 from .persona import Persona, PersonaManager
+from .streaming import StreamCoordinator
+from .task import Task, TaskCoordinator, TaskResult, TaskStep
 
 
 BACKEND_ALIASES: MutableMapping[str, Provider] = {
@@ -37,17 +40,35 @@ BACKEND_ALIASES: MutableMapping[str, Provider] = {
 class LLMOrchestrator:
     """Core orchestrator API used by the CLI, TUI, and automation layers."""
 
-    def __init__(self, config: Optional[Config] = None) -> None:
-        self.config = config or Config()
-        self.client = LLMClient()
+    def __init__(self, config: Optional[ConfigLoader] = None) -> None:
+        self.config = config or ConfigLoader()
+        self.client = LLMClient(
+            fallback_chain=[
+                Provider.CLAUDE,
+                Provider.OPENAI,
+                Provider.GEMINI,
+                Provider.OLLAMA,
+            ],
+            config=self.config,
+        )
+        # Respect orchestrator fallback chain from config if present
+        chain = self.config.get("orchestrator.fallback_chain")
+        if isinstance(chain, list):
+            providers = [BACKEND_ALIASES.get(name, None) for name in chain]
+            self.client.fallback_chain = [p for p in providers if p]
+
         self.router = ModelRouter(self.config)
-        self.context_manager = ContextManager(self.config)
-        self.personas = PersonaManager()
+        self.context_manager = ContextManager(self.config, orchestrator=self)
+        self.personas = PersonaManager(self.config)
+        self.stream_coordinator = StreamCoordinator()
+        self.task_coordinator = TaskCoordinator(self)
         self.usage_tracker: UsageTracker = self.client.usage_tracker
         self.usage_tracker.set_limits(
-            max_cost=self.config.get("quota_max_cost"),
-            max_tokens_per_request=self.config.get("quota_max_tokens_per_request"),
+            max_cost=self.config.get("quotas.max_cost_per_day"),
+            max_tokens_per_request=self.config.get("quotas.max_tokens_per_request"),
         )
+        self.usage_tracker.max_cost_hourly = self.config.get("quotas.max_cost_per_hour")
+        self.usage_tracker.max_cost_daily = self.config.get("quotas.max_cost_per_day")
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -67,7 +88,7 @@ class LLMOrchestrator:
         """Send a single-turn request with context, persona, and routing."""
         provider = await self._select_provider(backend, persona, message, task_type)
         persona_obj = self.personas.get(persona)
-        messages = self._prepare_messages(message, provider, persona_obj, include_context)
+        messages = await self._prepare_messages(message, provider, persona_obj, include_context)
         estimated_tokens = self._estimate_tokens(messages)
         self.usage_tracker.check_request_budget(estimated_tokens)
 
@@ -107,7 +128,7 @@ class LLMOrchestrator:
         """Stream a response while building context once the stream completes."""
         provider = await self._select_provider(backend, persona, message, task_type)
         persona_obj = self.personas.get(persona)
-        messages = self._prepare_messages(message, provider, persona_obj, include_context)
+        messages = await self._prepare_messages(message, provider, persona_obj, include_context)
         estimated_tokens = self._estimate_tokens(messages)
         self.usage_tracker.check_request_budget(estimated_tokens)
 
@@ -121,7 +142,8 @@ class LLMOrchestrator:
             temperature=temperature or persona_obj.temperature,
         )
 
-        async for chunk in self.client.stream(request):
+        stream = self.client.stream(request)
+        async for chunk in self.stream_coordinator.stream_with_validation(stream, tools):
             if chunk.delta:
                 full_delta.append(chunk.delta)
             yield chunk
@@ -166,6 +188,61 @@ class LLMOrchestrator:
         """Return the current persona."""
         return self.personas.get_active()
 
+    async def execute_task(
+        self,
+        task: Task,
+        *,
+        backend: str | None = None,
+        streaming: bool = True,
+    ) -> TaskResult:
+        """Execute a multi-step task using the TaskCoordinator."""
+        return await self.task_coordinator.execute(task, backend=backend, streaming=streaming)
+
+    def plan_task(
+        self,
+        goal: str,
+        requirements: list[str] | None = None,
+        context: dict[str, object] | None = None,
+    ) -> Task:
+        """Lightweight planning helper to create a Task with steps derived from requirements."""
+        reqs = requirements or ["Implement goal"]
+        steps = [
+            TaskStep(
+                id=f"step-{idx+1}",
+                description=req,
+                suggested_approach="Provide detailed implementation guidance.",
+            )
+            for idx, req in enumerate(reqs)
+        ]
+        return Task(name=goal, description=goal, steps=steps, context=context or {})
+
+    def reset_context(self, backend: str | None = None) -> None:
+        """Reset conversation context."""
+        if backend:
+            self.context_manager.clear_backend_context(backend)
+        else:
+            self.context_manager.clear_all()
+
+    def get_context(self, backend: str | None = None) -> list[ChatMessage]:
+        """Get current conversation context."""
+        return self.context_manager.get_context(backend)
+
+    def add_persistent_memory(self, key: str, value: str, tags: list[str] | None = None) -> None:
+        """Add to persistent memory store."""
+        self.context_manager.remember(f"{key}: {value}", tags or [])
+
+    def retrieve_memory(self, query: str) -> list[str]:
+        """Retrieve from persistent memory."""
+        return self.context_manager.retrieve(query)
+
+    def get_usage(self):
+        """Expose aggregated usage stats."""
+        return self.usage_tracker.get_aggregate_usage()
+
+    def get_health(self) -> dict:
+        """Return health/routing stats."""
+        return self.router.get_routing_stats()
+
     # ------------------------------------------------------------------ #
     # Internals
     # ------------------------------------------------------------------ #
@@ -203,7 +280,7 @@ class LLMOrchestrator:
             return ModelRole.BOILERPLATE
         return ModelRole.CODER
 
-    def _prepare_messages(
+    async def _prepare_messages(
         self,
         incoming: str | Sequence[ChatMessage],
         provider: Provider,
@@ -219,7 +296,7 @@ class LLMOrchestrator:
         if include_context:
             context_messages = self._memory_blend(incoming, backend_key)
             if self._should_distill(context_messages):
-                context_messages = self.context_manager.distill(
+                context_messages = await self.context_manager_distill(
                     backend_key,
                     hint=incoming if isinstance(incoming, str) else None,
                 )
@@ -317,11 +394,11 @@ class LLMOrchestrator:
         """Persist the conversational context for future turns."""
         backend_key = provider.value
         if isinstance(original_message, str):
-            self.context_manager.add_message(backend_key, ChatMessage(role="user", content=original_message))
+            self.context_manager.add_message(ChatMessage(role="user", content=original_message), backend_key)
         else:
             for msg in original_message:
-                self.context_manager.add_message(backend_key, msg)
-        self.context_manager.add_message(backend_key, ChatMessage(role="assistant", content=response.content))
+                self.context_manager.add_message(msg, backend_key)
+        self.context_manager.add_message(ChatMessage(role="assistant", content=response.content), backend_key)
 
         if response.usage:
             try:
@@ -355,10 +432,53 @@ class LLMOrchestrator:
         """Location for tool audit logs (per-feature if available)."""
         base = getattr(self, "feature_dir", None)
         if base is None:
-            base = self.config.config_dir
+            base = self.config.global_dir
         return Path(base) / "logs" / "tools.log"
 
     def _should_distill(self, messages: Sequence[ChatMessage]) -> bool:
         """Check if context distillation should run."""
-        trigger = self.config.get("context_distill_trigger_tokens", 50000)
+        trigger = self.config.get("context.distillation_trigger_tokens", 50000)
         return self._estimate_tokens(messages) > int(trigger)
+
+    async def context_manager_distill(self, backend: str, hint: str | None = None) -> List[ChatMessage]:
+        """Delegate to context manager for distillation with LLM fallback."""
+        try:
+            return await self.context_manager.distill_async(backend, hint=hint)
+        except AttributeError:
+            # Backwards compatibility if async distill not available
+            try:
+                return self.context_manager.distill(backend, hint=hint)  # type: ignore[attr-defined]
+            except Exception:
+                return self.context_manager.get_context(backend)
+
+    def _build_direct_request(
+        self,
+        messages: Sequence[ChatMessage],
+        provider: Provider,
+        persona_name: str | None = None,
+    ) -> ChatRequest:
+        """Construct a direct ChatRequest bypassing routing for helper flows."""
+        persona = self.personas.get(persona_name)
+        prompt_messages: List[ChatMessage] = []
+        if persona.system_prompt:
+            prompt_messages.append(ChatMessage(role="system", content=persona.system_prompt))
+        prompt_messages.extend(messages)
+        return ChatRequest(
+            messages=prompt_messages,
+            provider=provider,
+            model=self._default_model(provider),
+            temperature=persona.temperature if persona else None,
+            max_tokens=persona.max_tokens if persona else None,
+        )
+
+    def _direct_chat(self, request: ChatRequest) -> Optional[ChatResponse]:
+        """Run a direct chat request synchronously when no event loop is active."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.client.chat(request))
+        else:
+            # Avoid blocking an active loop; caller should handle None.
+            if loop.is_running():
+                return None
+            return loop.run_until_complete(self.client.chat(request))

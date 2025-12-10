@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Iterable, Optional, Sequence
 
+from ..config import ConfigLoader
+
 
 @dataclass
 class Persona:
@@ -21,8 +23,9 @@ class Persona:
 class PersonaManager:
     """Stores available personas and tracks the active one."""
 
-    def __init__(self) -> None:
-        self.personas: Dict[str, Persona] = {p.name: p for p in self._default_personas()}
+    def __init__(self, config: Optional[ConfigLoader] = None) -> None:
+        self.config = config or ConfigLoader()
+        self.personas: Dict[str, Persona] = {p.name: p for p in self._load_personas()}
         self._active: str = "general-assistant"
 
     def set_active(self, name: str) -> Persona:
@@ -48,73 +51,22 @@ class PersonaManager:
         """List available persona names."""
         return self.personas.keys()
 
-    def _default_personas(self) -> Iterable[Persona]:
-        """Built-in personas mirroring the orchestrator spec."""
-        return [
-            Persona(
-                name="general-assistant",
-                description="Balanced general-purpose assistant.",
-                system_prompt=(
-                    "You are a helpful AI assistant. Provide clear, accurate, and concise answers. "
-                    "Think step-by-step and explain reasoning briefly when helpful."
-                ),
-                temperature=0.7,
-                max_tokens=4000,
-                preferred_backends=("claude", "openai"),
-            ),
-            Persona(
-                name="code-specialist",
-                description="Expert at writing, reviewing, and debugging code.",
-                system_prompt=(
-                    "You are an expert software engineer. You write clean, idiomatic, well-tested code. "
-                    "You follow best practices and explain design decisions briefly."
-                ),
-                temperature=0.3,
-                max_tokens=8000,
-                preferred_backends=("openai", "claude"),
-            ),
-            Persona(
-                name="fast-parser",
-                description="Focused on quick parsing and structured output.",
-                system_prompt=(
-                    "You are a fast, efficient parser. Extract structured information accurately and return "
-                    "well-formatted JSON responses when possible."
-                ),
-                temperature=0.2,
-                max_tokens=2000,
-                preferred_backends=("gemini", "openai"),
-            ),
-            Persona(
-                name="context-distiller",
-                description="Distills large contexts into task-relevant summaries.",
-                system_prompt=(
-                    "You are a context distillation specialist. Read large amounts of context and extract only "
-                    "the most relevant information for the current task. Focus on key decisions, unresolved issues, "
-                    "critical facts, and recent changes."
-                ),
-                temperature=0.3,
-                max_tokens=4000,
-                preferred_backends=("gemini",),
-            ),
-            Persona(
-                name="local-coder",
-                description="Local model for quick coding tasks.",
-                system_prompt=(
-                    "You are a concise coding assistant running locally. Provide practical code solutions without fluff."
-                ),
-                temperature=0.3,
-                max_tokens=2000,
-                preferred_backends=("ollama",),
-            ),
-            Persona(
-                name="architect",
-                description="Deep reasoning and system design.",
-                system_prompt=(
-                    "You are a senior software architect. Think thoroughly about trade-offs, scalability, "
-                    "and maintainability. Provide detailed technical plans."
-                ),
-                temperature=0.2,
-                max_tokens=16000,
-                preferred_backends=("claude", "openai"),
-            ),
-        ]
+    def _load_personas(self) -> Iterable[Persona]:
+        """Load personas from config, falling back to defaults."""
+        raw = self.config.personas.get("personas") if hasattr(self.config, "personas") else None
+        if not raw:
+            raw = self.config._get_default_personas().get("personas", {})  # type: ignore[attr-defined]
+
+        personas: list[Persona] = []
+        for name, data in raw.items():
+            personas.append(
+                Persona(
+                    name=name,
+                    description=data.get("description", ""),
+                    system_prompt=data.get("system_prompt", ""),
+                    temperature=float(data.get("temperature", 0.7)),
+                    max_tokens=int(data.get("max_tokens", 4000)),
+                    preferred_backends=tuple(data.get("preferred_backends", ())),
+                )
+            )
+        return personas

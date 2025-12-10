@@ -17,6 +17,7 @@ from .base import (
     ToolCall,
 )
 from .cache import CacheManager
+from ..config import ConfigLoader
 from .codex import OpenAIAdapter
 from .claude import ClaudeAdapter
 from .credentials import CredentialsManager
@@ -60,12 +61,15 @@ class LLMClient:
         fallback_chain: Optional[Sequence[Provider]] = None,
         cache_ttl_seconds: int = 3600,
         cache_max_entries: int = 512,
+        config: Optional[ConfigLoader] = None,
     ) -> None:
-        self.credentials = CredentialsManager()
+        self.config = config or ConfigLoader()
+        self.credentials = CredentialsManager(self.config)
         self.adapter_factory = AdapterFactory(self.credentials)
         self.stream_handler = StreamHandler()
         self.cache = CacheManager(ttl_seconds=cache_ttl_seconds, max_entries=cache_max_entries)
-        self.tool_engine = ToolEngine()
+        self.tool_engine = ToolEngine(config=self.config)
+        self.tool_engine.set_auto_approve_patterns(self.config.get("tools.auto_approve", []) or [])
         self.usage_tracker = UsageTracker(feature_dir=None)
         self.fallback_chain = list(fallback_chain) if fallback_chain else [
             Provider.OLLAMA,
@@ -150,8 +154,11 @@ class LLMClient:
         self.tool_engine.register_tool(name, handler)
 
     async def execute_tool(self, tool_call: ToolCall) -> MutableMapping[str, object]:
-        result = self.tool_engine.execute_tool(tool_call.name, tool_call.arguments)
-        return {"toolCallId": tool_call.id, "result": result}
+        try:
+            result = self.tool_engine.execute_tool(tool_call.name, tool_call.arguments)
+            return {"toolCallId": tool_call.id, "result": result, "approved": True}
+        except Exception as exc:  # noqa: PERF203 - explicit propagation
+            return {"toolCallId": tool_call.id, "result": None, "error": str(exc), "approved": False}
 
     def _record_usage(self, provider: str, model: str, usage: Optional[MutableMapping[str, object]]) -> None:
         try:

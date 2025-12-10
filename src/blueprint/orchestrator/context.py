@@ -1,143 +1,271 @@
-"""Session and persistent context management for the orchestrator."""
+"""Session, distillation, and persistent context management for the orchestrator."""
 
 from __future__ import annotations
 
+import asyncio
+import pickle
+import sqlite3
 from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Deque, Dict, Iterable, List, MutableMapping, Sequence
 
-from ..config import Config
-from ..models.base import ChatMessage
+from ..config import ConfigLoader
+from ..models.base import ChatMessage, ChatRequest, Provider
 from ..state.persistence import Persistence
 
 
-class ContextManager:
-    """Manages per-backend session history and lightweight persistent memory."""
+class PersistentMemory:
+    """SQLite-backed persistent memory store with lightweight embeddings."""
 
-    def __init__(self, config: Config, memory_path: Path | None = None) -> None:
+    def __init__(self, db_path: Path) -> None:
+        self.db_path = db_path
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(str(self.db_path))
+        self._ensure_schema()
+
+    def _ensure_schema(self) -> None:
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                key TEXT,
+                value TEXT,
+                embedding BLOB,
+                tags TEXT,
+                added_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        self.conn.commit()
+
+    def add(self, key: str, value: str, tags: list[str] | None = None) -> None:
+        embedding = self._generate_embedding(value)
+        self.conn.execute(
+            """
+            INSERT INTO memories (key, value, embedding, tags)
+            VALUES (?, ?, ?, ?)
+            """,
+            (key, value, self._serialize_embedding(embedding), json_dumps(tags or [])),
+        )
+        self.conn.commit()
+
+    def retrieve(self, query: str, limit: int = 5) -> list[str]:
+        """Retrieve relevant memories using embedding similarity."""
+        query_embedding = self._generate_embedding(query)
+        cursor = self.conn.execute("SELECT value, embedding FROM memories")
+
+        results: list[tuple[float, str]] = []
+        for value, embedding_blob in cursor:
+            embedding = self._deserialize_embedding(embedding_blob)
+            similarity = self._cosine_similarity(query_embedding, embedding)
+            results.append((similarity, value))
+
+        results.sort(reverse=True, key=lambda x: x[0])
+        return [value for _, value in results[:limit]]
+
+    def _generate_embedding(self, text: str) -> list[float]:
+        # Placeholder embedding; replace with model-backed embeddings if available.
+        return [float(len(text) % 10)] * 64
+
+    def _serialize_embedding(self, embedding: list[float]) -> bytes:
+        return pickle.dumps(embedding)
+
+    def _deserialize_embedding(self, blob: bytes) -> list[float]:
+        return pickle.loads(blob)
+
+    def _cosine_similarity(self, a: list[float], b: list[float]) -> float:
+        import math
+
+        dot_product = sum(x * y for x, y in zip(a, b))
+        mag_a = math.sqrt(sum(x * x for x in a))
+        mag_b = math.sqrt(sum(x * x for x in b))
+        return dot_product / (mag_a * mag_b) if mag_a and mag_b else 0.0
+
+
+def json_dumps(obj: object) -> str:
+    import json
+
+    return json.dumps(obj)
+
+
+class ContextManager:
+    """Manages multi-tier context system (session + persistent + distillation)."""
+
+    def __init__(self, config: ConfigLoader, orchestrator: "LLMOrchestrator" | None = None) -> None:
         self.config = config
-        self.max_messages = int(config.get("context_max_messages", 50))
-        self.summarize_threshold = int(config.get("context_summarize_threshold", 40))
-        self.distill_trigger_tokens = int(config.get("context_distill_trigger_tokens", 50000))
-        self.distill_target_tokens = int(config.get("context_distill_target_tokens", 8000))
+        self.orchestrator = orchestrator
+        ctx = config.get
+        self.max_session_messages = int(ctx("context.session_max_messages", 50))
+        self.max_session_tokens = int(ctx("context.session_max_tokens", 100000))
+        self.summarize_threshold = int(ctx("context.auto_summarize_threshold", 40))
+        self.enable_distillation = bool(ctx("context.enable_distillation", True))
+        self.distillation_trigger_tokens = int(ctx("context.distillation_trigger_tokens", 50000))
+        self.distillation_target_tokens = int(ctx("context.distillation_target_tokens", 8000))
+        self.distillation_backend = ctx("context.distillation_backend", "gemini")
+        self.distillation_persona = ctx("context.distillation_persona", "context-distiller")
 
         self._session: Dict[str, Deque[ChatMessage]] = {}
-        base_dir = memory_path or config.config_dir
-        self.memory_file = Path(base_dir) / "memory.json"
+
+        memory_enabled = bool(ctx("context.persistent_memory_enabled", True))
+        memory_path = Path(ctx("context.memory_db_path", "~/.config/blueprint/memory.db")).expanduser()
+        self.memory = PersistentMemory(memory_path) if memory_enabled else None
 
     # --- Session context -------------------------------------------------
-    def add_message(self, backend: str, message: ChatMessage) -> None:
-        """Append a message to the session history for a backend."""
-        history = self._session.setdefault(backend, deque())
-        history.append(message)
-        self._maybe_summarize(backend)
-
-    def get_context(self, backend: str | None = None) -> List[ChatMessage]:
-        """Return the session context for a backend, merged with global."""
+    def add_message(self, message: ChatMessage, backend: str | None = None) -> None:
+        """Add message to session context."""
         key = backend or "global"
-        context = list(self._session.get(key, ()))
+        if key not in self._session:
+            self._session[key] = deque(maxlen=self.max_session_messages)
+        self._session[key].append(message)
+        if len(self._session[key]) >= self.summarize_threshold:
+            self._summarize_context(key)
+
+    def get_context(
+        self,
+        backend: str | None = None,
+        max_tokens: int | None = None,
+        current_task: str | None = None,
+    ) -> list[ChatMessage]:
+        """Get context for backend, optionally distilling and trimming."""
+        key = backend or "global"
+        context = list(self._session.get(key, []))
         if key != "global":
-            context = list(self._session.get("global", ())) + context
+            context = list(self._session.get("global", [])) + context
+
+        if max_tokens:
+            context = self._trim_to_tokens(context, max_tokens)
         return context
 
-    def clear_backend(self, backend: str) -> None:
-        """Clear context for a specific backend."""
+    def get_relevant_context(
+        self,
+        query: str,
+        backend: str | None = None,
+        max_items: int = 5,
+    ) -> list[ChatMessage]:
+        """Combine persistent memory retrieval with recent session context."""
+        recent = self.get_context(backend)[-10:]
+        memories = self.memory.retrieve(query, limit=max_items) if self.memory else []
+        memory_messages = [ChatMessage(role="system", content=f"[Memory] {mem}") for mem in memories]
+        return memory_messages + recent
+
+    def clear_backend_context(self, backend: str) -> None:
+        """Clear session context for specific backend."""
         self._session.pop(backend, None)
 
     def clear_all(self) -> None:
-        """Clear context for all backends."""
+        """Clear all session contexts."""
         self._session.clear()
 
-    def _maybe_summarize(self, backend: str) -> None:
-        """Collapse older history to keep the session bounded."""
-        history = self._session.get(backend)
-        if not history:
+    # --- Persistent memory ----------------------------------------------
+    def remember(self, text: str, tags: Sequence[str] | None = None) -> None:
+        if not self.memory:
             return
+        self.memory.add(key="note", value=text, tags=list(tags) if tags else [])
 
-        threshold = max(self.summarize_threshold, self.max_messages)
-        if len(history) <= threshold:
-            return
+    def retrieve(self, query: str, limit: int = 5) -> List[str]:
+        if not self.memory:
+            return []
+        return self.memory.retrieve(query, limit=limit)
 
-        # Summarize older messages into a single system note.
-        keep_tail = list(history)[-10:]
-        prefix = list(history)[:-10]
-        summary_text = "\n".join(f"{m.role}: {m.content}" for m in prefix)
-        summarized = deque(keep_tail, maxlen=self.max_messages)
-        summarized.appendleft(ChatMessage(role="system", content=f"[Earlier context summary]\n{summary_text}"))
-        self._session[backend] = summarized
-
-    def distill(self, backend: str, hint: str | None = None) -> List[ChatMessage]:
-        """
-        Reduce a long context to a smaller summary.
-
-        This implementation is lightweight: we keep the last few turns and prepend a condensed note.
-        """
+    async def distill_async(self, backend: str, hint: str | None = None) -> List[ChatMessage]:
+        """Async distillation that leverages the orchestrator's client when available."""
         history = list(self._session.get(backend, ()))
         if not history:
             return []
 
-        # If already below target, return as-is
-        est_tokens = self._estimate_tokens(history)
-        if est_tokens <= self.distill_target_tokens:
+        if self._estimate_tokens(history) <= self.distillation_trigger_tokens:
             return history
 
+        summary_msg = await self._distill_context_async(history, hint, backend)
         keep_tail = history[-8:]
-        earlier = history[:-8]
-        summary_lines = [f"{msg.role}: {msg.content}" for msg in earlier]
-        note_header = "[Context distilled]"
-        if hint:
-            note_header += f" Task: {hint}"
-        summary = ChatMessage(
-            role="system",
-            content=f"{note_header}\nKey points:\n" + "\n".join(summary_lines[:20]),
-        )
-        distilled = [summary] + keep_tail
-        self._session[backend] = deque(distilled, maxlen=self.max_messages)
+        distilled = [summary_msg] + keep_tail
+        self._session[backend] = deque(distilled, maxlen=self.max_session_messages)
         return distilled
 
-    # --- Persistent memory ----------------------------------------------
-    def remember(self, text: str, tags: Sequence[str] | None = None) -> None:
-        """Store a fact in persistent memory."""
-        payload: MutableMapping[str, object] = {
-            "text": text,
-            "tags": list(tags) if tags else [],
-            "added_at": datetime.utcnow().isoformat(),
-        }
-        data = self._load_memories()
-        items = data.get("items", [])
-        items.append(payload)
-        data["items"] = items
-        Persistence.save_json(self.memory_file, data)
+    # --- Internal helpers -----------------------------------------------
+    def _summarize_context(self, key: str) -> None:
+        """Summarize old context to save tokens."""
+        context = list(self._session[key])
+        keep_recent = 10
+        to_summarize = context[:-keep_recent]
+        recent = context[-keep_recent:]
+        if not to_summarize:
+            return
 
-    def retrieve(self, query: str, limit: int = 5) -> List[str]:
-        """Fetch memories matching a query string or tag."""
-        data = self._load_memories()
-        items: Iterable[MutableMapping[str, object]] = data.get("items", [])
-        query_lower = query.lower()
-        matches: List[str] = []
-        for item in items:
-            text = str(item.get("text", ""))
-            tags = [str(t).lower() for t in item.get("tags", [])]
-            if query_lower in text.lower() or query_lower in tags:
-                matches.append(text)
-            if len(matches) >= limit:
+        summary_text = "\n".join(f"{msg.role}: {msg.content}" for msg in to_summarize)
+        summary_msg = ChatMessage(
+            role="system",
+            content=f"[Previous conversation summary]: {summary_text}",
+        )
+        self._session[key] = deque([summary_msg] + recent, maxlen=self.max_session_messages)
+
+    def _trim_to_tokens(self, messages: list[ChatMessage], max_tokens: int) -> list[ChatMessage]:
+        """Trim message list to fit token budget, keeping most recent messages."""
+        total_tokens = 0
+        result: list[ChatMessage] = []
+        for msg in reversed(messages):
+            msg_tokens = len(msg.content) // 4
+            if total_tokens + msg_tokens > max_tokens:
                 break
-        return matches
-
-    def _load_memories(self) -> MutableMapping[str, object]:
-        """Load persisted memory from disk."""
-        self.memory_file.parent.mkdir(parents=True, exist_ok=True)
-        return Persistence.load_json(self.memory_file)
+            result.insert(0, msg)
+            total_tokens += msg_tokens
+        return result
 
     def _estimate_tokens(self, messages: Sequence[ChatMessage]) -> int:
-        """Very rough token estimate."""
         return max(1, sum(len(m.content) for m in messages) // 4)
 
-    def stats(self, backend: str) -> dict[str, int]:
-        """Return lightweight stats for a backend context."""
-        msgs = list(self._session.get(backend, ()))
-        return {
-            "messages": len(msgs),
-            "estimated_tokens": self._estimate_tokens(msgs),
+    async def _distill_context_async(
+        self,
+        context: list[ChatMessage],
+        current_task: str | None,
+        backend: str | None = None,
+    ) -> ChatMessage:
+        """Run distillation via LLM backend, fallback to lightweight summary."""
+        context_text = self._format_context_for_distillation(context)
+        distillation_prompt = (
+            "You are analyzing a large conversation history to extract only the information relevant to the current task.\n\n"
+            f"**Current Task:**\n{current_task or ''}\n\n"
+            f"**Full Context:**\n{context_text}\n\n"
+            "Instructions:\n"
+            "Extract and summarize only the information from the context that is relevant to completing the current task. "
+            "Focus on key decisions, important code patterns, unresolved issues, critical facts, and recent changes. "
+            "Ignore tangential or redundant information."
+        )
+
+        distilled_summary: str | None = None
+        if self.orchestrator is not None:
+            try:
+                provider = self._provider_for_backend(self.distillation_backend)
+                messages = [ChatMessage(role="user", content=distillation_prompt)]
+                request = self.orchestrator._build_direct_request(  # noqa: SLF001
+                    messages=messages,
+                    provider=provider,
+                    persona_name=self.distillation_persona,
+                )
+                response = await self.orchestrator.client.chat(request)  # type: ignore[arg-type]
+                distilled_summary = response.content
+            except Exception:
+                distilled_summary = None
+
+        if not distilled_summary:
+            distilled_summary = f"[Context distilled] Task: {current_task or ''}\n{context_text[:2000]}"
+
+        target_backend = backend or "global"
+        return ChatMessage(role="system", content=distilled_summary)
+
+    def _provider_for_backend(self, backend: str) -> Provider:
+        mapping = {
+            "claude": Provider.CLAUDE,
+            "openai": Provider.OPENAI,
+            "gemini": Provider.GEMINI,
+            "ollama": Provider.OLLAMA,
         }
+        return mapping.get(backend, Provider.GEMINI)
+
+    def _format_context_for_distillation(self, context: list[ChatMessage]) -> str:
+        return "\n".join(f"{msg.role}: {msg.content}" for msg in context)
+
+    def stats(self, backend: str) -> dict[str, int]:
+        msgs = list(self._session.get(backend, ()))
+        return {"messages": len(msgs), "estimated_tokens": self._estimate_tokens(msgs)}
